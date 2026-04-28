@@ -42,6 +42,7 @@ type Mailbox struct {
 	Address     string    `json:"address"`
 	DomainID    int       `json:"domain_id"`
 	FullAddress string    `json:"full_address"`
+	IsFavorite  bool      `json:"is_favorite"`
 	CreatedAt   time.Time `json:"created_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
 }

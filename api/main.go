@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -104,6 +106,7 @@ func main() {
 		api.POST("/mailboxes", mailboxH.Create)
 		api.GET("/mailboxes", mailboxH.List)
 		api.DELETE("/mailboxes/:id", mailboxH.Delete)
+		api.PUT("/mailboxes/:id/favorite", mailboxH.Favorite)
 
 		// 邮件管理
                 api.GET("/mailboxes/:id/emails", emailH.List)
@@ -157,16 +160,64 @@ func main() {
 				return
 			}
 
+			recipient := strings.ToLower(strings.TrimSpace(req.Recipient))
+			ctx := c.Request.Context()
+
 			// 查找收件邮箱
-			mailbox, err := db.GetMailboxByFullAddress(c.Request.Context(), req.Recipient)
+			mailbox, err := db.GetMailboxByFullAddress(ctx, recipient)
 			if err != nil {
-				// 邮箱不存在，静默丢弃
-				c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "unknown recipient"})
-				return
+				// 未知收件人 → 检查 catch-all 是否启用
+				enabled, _ := db.GetSetting(ctx, "catchall_enabled")
+				if enabled != "true" {
+					c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "unknown recipient"})
+					return
+				}
+
+				// 解析 local-part@domain
+				atIdx := strings.LastIndex(recipient, "@")
+				if atIdx <= 0 || atIdx == len(recipient)-1 {
+					c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "invalid recipient"})
+					return
+				}
+				localPart := recipient[:atIdx]
+				domainPart := recipient[atIdx+1:]
+
+				// 域名必须已托管且 active
+				domainRec, err := db.GetDomainByName(ctx, domainPart)
+				if err != nil {
+					c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "domain not hosted"})
+					return
+				}
+
+				// 决定归属账号
+				ownerID, err := db.GetCatchAllAccountID(ctx)
+				if err != nil {
+					log.Printf("[catchall] no owner account: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "no catch-all owner account"})
+					return
+				}
+
+				// 决定 TTL
+				ttlMinutes := 30
+				if ttlStr, err := db.GetSetting(ctx, "mailbox_ttl_minutes"); err == nil {
+					if n, perr := strconv.Atoi(ttlStr); perr == nil && n > 0 {
+						ttlMinutes = n
+					}
+				}
+
+				// 自动建箱（并发安全）
+				newMailbox, err := db.EnsureCatchAllMailbox(ctx, ownerID, localPart, domainRec.ID, recipient, ttlMinutes)
+				if err != nil {
+					log.Printf("[catchall] create mailbox error: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				log.Printf("[catchall] auto-created mailbox %s for unknown recipient", recipient)
+				mailbox = newMailbox
 			}
 
 			// 存储邮件
-			email, err := db.InsertEmail(c.Request.Context(),
+			email, err := db.InsertEmail(ctx,
 				mailbox.ID, req.Sender, req.Subject, req.BodyText, req.BodyHTML, req.Raw)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

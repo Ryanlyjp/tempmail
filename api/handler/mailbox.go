@@ -103,6 +103,39 @@ func (h *MailboxHandler) List(c *gin.Context) {
 	})
 }
 
+// PUT /api/mailboxes/:id/favorite - 设置/取消收藏
+// 收藏后邮箱不会被定时清理；取消收藏会把过期时间重置为 now + mailbox_ttl_minutes。
+func (h *MailboxHandler) Favorite(c *gin.Context) {
+	account := middleware.GetAccount(c)
+	id, err := parseUUID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mailbox id"})
+		return
+	}
+
+	var req struct {
+		Favorite bool `json:"favorite"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ttlMinutes := 30
+	if ttlStr, err := h.store.GetSetting(c.Request.Context(), "mailbox_ttl_minutes"); err == nil {
+		if n, err := strconv.Atoi(ttlStr); err == nil && n > 0 {
+			ttlMinutes = n
+		}
+	}
+
+	mailbox, err := h.store.SetMailboxFavorite(c.Request.Context(), id, account.ID, req.Favorite, ttlMinutes)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"mailbox": mailbox})
+}
+
 // DELETE /api/mailboxes/:id - 删除邮箱
 func (h *MailboxHandler) Delete(c *gin.Context) {
 	account := middleware.GetAccount(c)

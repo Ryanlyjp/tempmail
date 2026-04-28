@@ -298,13 +298,87 @@ func (s *Store) CreateMailbox(ctx context.Context, accountID uuid.UUID, address 
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO mailboxes (account_id, address, domain_id, full_address, expires_at)
 		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, account_id, address, domain_id, full_address, created_at, expires_at`,
+		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
 		accountID, address, domainID, fullAddress, expiresAt,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// EnsureCatchAllMailbox 用于 catch-all 投递：地址不存在则自动创建并返回；
+// 已存在（包括并发竞争）则返回既有行。注意：is_favorite/expires_at 不会被覆盖。
+func (s *Store) EnsureCatchAllMailbox(ctx context.Context, accountID uuid.UUID, address string, domainID int, fullAddress string, ttlMinutes int) (*model.Mailbox, error) {
+	if ttlMinutes <= 0 {
+		ttlMinutes = 30
+	}
+	expiresAt := time.Now().Add(time.Duration(ttlMinutes) * time.Minute)
+	var m model.Mailbox
+	// ON CONFLICT 上 DO UPDATE 一个无副作用字段，保证 RETURNING 永远拿到行
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO mailboxes (account_id, address, domain_id, full_address, expires_at)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (full_address) DO UPDATE SET full_address = EXCLUDED.full_address
+		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+		accountID, address, domainID, fullAddress, expiresAt,
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// SetMailboxFavorite 设置/取消收藏。取消收藏时把 expires_at 重置为 now + ttl，避免立即被清理。
+func (s *Store) SetMailboxFavorite(ctx context.Context, mailboxID uuid.UUID, accountID uuid.UUID, fav bool, ttlMinutes int) (*model.Mailbox, error) {
+	if ttlMinutes <= 0 {
+		ttlMinutes = 30
+	}
+	var m model.Mailbox
+	var err error
+	if fav {
+		err = s.pool.QueryRow(ctx,
+			`UPDATE mailboxes SET is_favorite = TRUE
+			 WHERE id = $1 AND account_id = $2
+			 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+			mailboxID, accountID,
+		).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	} else {
+		newExpire := time.Now().Add(time.Duration(ttlMinutes) * time.Minute)
+		err = s.pool.QueryRow(ctx,
+			`UPDATE mailboxes SET is_favorite = FALSE, expires_at = $3
+			 WHERE id = $1 AND account_id = $2
+			 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+			mailboxID, accountID, newExpire,
+		).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// GetCatchAllAccountID 获取 catch-all 邮箱的归属账号：
+// 优先读 catchall_account_id 设置；为空时回退首个 admin。
+func (s *Store) GetCatchAllAccountID(ctx context.Context) (uuid.UUID, error) {
+	configured, _ := s.GetSetting(ctx, "catchall_account_id")
+	if configured != "" {
+		if id, err := uuid.Parse(configured); err == nil {
+			// 验证账号确实存在且活跃
+			var ok bool
+			if err := s.pool.QueryRow(ctx,
+				`SELECT TRUE FROM accounts WHERE id = $1 AND is_active = TRUE`, id,
+			).Scan(&ok); err == nil {
+				return id, nil
+			}
+		}
+	}
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM accounts WHERE is_admin = TRUE AND is_active = TRUE
+		 ORDER BY created_at LIMIT 1`,
+	).Scan(&id)
+	return id, err
 }
 
 func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, size int) ([]model.Mailbox, int, error) {
@@ -316,9 +390,9 @@ func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, si
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, created_at, expires_at
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at
 		 FROM mailboxes WHERE account_id = $1
-		 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+		 ORDER BY is_favorite DESC, created_at DESC LIMIT $2 OFFSET $3`,
 		accountID, size, (page-1)*size,
 	)
 	if err != nil {
@@ -336,10 +410,10 @@ func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, si
 func (s *Store) GetMailbox(ctx context.Context, mailboxID uuid.UUID, accountID uuid.UUID) (*model.Mailbox, error) {
 	var m model.Mailbox
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, created_at, expires_at
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at
 		 FROM mailboxes WHERE id = $1 AND account_id = $2`,
 		mailboxID, accountID,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -361,19 +435,20 @@ func (s *Store) DeleteMailbox(ctx context.Context, mailboxID uuid.UUID, accountI
 func (s *Store) GetMailboxByFullAddress(ctx context.Context, fullAddress string) (*model.Mailbox, error) {
 	var m model.Mailbox
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, created_at, expires_at
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at
 		 FROM mailboxes WHERE full_address = $1`,
 		strings.ToLower(fullAddress),
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
 	return &m, nil
 }
 
-// DeleteExpiredMailboxes 刪除已过期的邮箱（及其所有邮件）
+// DeleteExpiredMailboxes 刪除已过期的邮箱（及其所有邮件），收藏的邮箱永不删除。
 func (s *Store) DeleteExpiredMailboxes(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM mailboxes WHERE expires_at < NOW()`)
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM mailboxes WHERE expires_at < NOW() AND is_favorite = FALSE`)
 	if err != nil {
 		return 0, err
 	}

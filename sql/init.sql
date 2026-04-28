@@ -46,6 +46,7 @@ CREATE TABLE mailboxes (
     address      VARCHAR(128) NOT NULL,  -- 本地部分，如 "abc123"
     domain_id    INT          NOT NULL REFERENCES domains(id),
     full_address VARCHAR(320) NOT NULL,  -- 完整地址 "abc123@mail.xxx.xyz"
+    is_favorite  BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     expires_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW() + INTERVAL '30 minutes'
 );
@@ -58,6 +59,9 @@ CREATE INDEX idx_mailboxes_account_id ON mailboxes (account_id);
 
 -- 过期自动清理索引
 CREATE INDEX idx_mailboxes_expires_at ON mailboxes (expires_at);
+
+-- 收藏邮箱索引（清理任务跳过收藏邮箱时用）
+CREATE INDEX idx_mailboxes_favorite ON mailboxes (is_favorite) WHERE is_favorite = TRUE;
 
 -- ============================================================
 -- 4. 邮件表 (emails)
@@ -100,6 +104,8 @@ INSERT INTO app_settings (key, value) VALUES ('registration_open', 'true') ON CO
 INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('catchall_enabled', 'false') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '') ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- 7. 数据库性能参数（在 postgresql.conf 或 docker 环境变量中设置更佳）
