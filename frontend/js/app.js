@@ -20,6 +20,10 @@ const state = {
   // 缓存
   mailboxes: [],
   emails:    [],
+  adminDomainQuery: '',
+  adminDomainStatus: 'all',
+  adminDomainHostname: 'all',
+  adminDomainSelection: {},
 };
 
 // ─── 工具函数 ───────────────────────────────────────────────
@@ -92,8 +96,9 @@ const api = {
   // 账户
   me:              () => apiFetch(API_BASE + '/me'),
   stats:           () => apiFetch(API_BASE + '/stats'),
+  domainsPayload:  (params = '') => apiFetch(API_BASE + '/domains' + (params ? '?' + params : '')),
   // 域名 → 解包 {domains:[...]} → 数组
-  domains:         () => apiFetch(API_BASE + '/domains').then(d => Array.isArray(d) ? d : (d.domains || [])),
+  domains:         (params = '') => api.domainsPayload(params).then(d => Array.isArray(d) ? d : (d.domains || [])),
   // 任意已登录用户提交域名 MX 验证
   submitDomain:    body => apiFetch(API_BASE + '/domains/submit', { method: 'POST', body: JSON.stringify(body) }),
   // 轮询域名状态（任意已登录用户，不需要管理员权限）
@@ -108,6 +113,7 @@ const api = {
   })),
   listMailboxes:   () => api.listMailboxesPage().then(d => d.data),
   deleteMailbox: id  => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
+  latestOTP:      id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp/latest').then(d => d.otp || d),
   // 邮件 → 解包 {data:[...]}
   listEmailsPage: (mid, page = 1, size = 20) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails?page=' + page + '&size=' + size).then(d => ({
     data: Array.isArray(d) ? d : (d.data || []),
@@ -125,7 +131,12 @@ const api = {
     deleteAccount: id   => apiFetch(API_BASE + '/admin/accounts/' + id, { method: 'DELETE' }),
     addDomain:   body => apiFetch(API_BASE + '/admin/domains', { method: 'POST', body: JSON.stringify(body) }),
     deleteDomain:  id => apiFetch(API_BASE + '/admin/domains/' + id, { method: 'DELETE' }),
+    deleteDomainCF: id => apiFetch(API_BASE + '/admin/domains/' + id + '/cf', { method: 'DELETE' }),
     toggleDomain:  (id, active) => apiFetch(API_BASE + '/admin/domains/' + id + '/toggle', { method: 'PUT', body: JSON.stringify({ active }) }),
+    updateDomainHostname: (id, hostname) => apiFetch(API_BASE + '/admin/domains/' + id + '/hostname', { method: 'PUT', body: JSON.stringify({ hostname }) }),
+    batchToggleDomains: (ids, active) => apiFetch(API_BASE + '/admin/domains/batch/toggle', { method: 'PUT', body: JSON.stringify({ ids, active }) }),
+    batchDeleteDomains: (ids, delete_cloudflare) => apiFetch(API_BASE + '/admin/domains/batch/delete', { method: 'PUT', body: JSON.stringify({ ids, delete_cloudflare }) }),
+    cfCreateDomain: body => apiFetch(API_BASE + '/admin/domains/cf-create', { method: 'POST', body: JSON.stringify(body) }),
     getSettings:    () => apiFetch(API_BASE + '/admin/settings'),
     saveSettings: body => apiFetch(API_BASE + '/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
     mxImport:    body => apiFetch(API_BASE + '/admin/domains/mx-import', { method: 'POST', body: JSON.stringify(body) }),
@@ -872,22 +883,22 @@ function stripHtml(html) {
 
 window.extractAndCopyCode = async function(mailboxID, fullAddress) {
   try {
-    const emails = await api.listEmails(mailboxID);
-    if (!emails || emails.length === 0) {
-      toast('该邮箱暂无邮件', 'warn');
-      return;
-    }
-    const latest = emails[0];
-    const full = await api.getEmail(mailboxID, latest.id);
-    const text = (full.body_text || '') + '\n' + stripHtml(full.body_html || '') + '\n' + (full.subject || '');
-    const code = extractCode(text);
-    if (!code) {
+    const res = await api.latestOTP(mailboxID);
+    if (!res || !res.code) {
       toast('未识别到验证码', 'warn');
       return;
     }
-    await navigator.clipboard.writeText(code).catch(() => {});
-    toast(`已复制验证码：${code}`, 'success');
+    await navigator.clipboard.writeText(res.code).catch(() => {});
+    toast(`已复制验证码：${res.code}`, 'success');
   } catch (e) {
+    if (String(e.message || '').includes('no emails found')) {
+      toast('该邮箱暂无邮件', 'warn');
+      return;
+    }
+    if (String(e.message || '').includes('otp not found')) {
+      toast('未识别到验证码', 'warn');
+      return;
+    }
     toast('提取失败：' + e.message, 'error');
   }
 };
@@ -1388,15 +1399,80 @@ async function renderAdminDomains(container) {
     actions.innerHTML = `
       <button class="btn btn-primary btn-sm" onclick="showAddDomainModal()">+ 手动添加</button>
       <button class="btn btn-success btn-sm" onclick="showMXRegisterModal()" style="margin-left:0.4rem">⚡ MX 自动注册</button>
+      <button class="btn btn-ghost btn-sm" onclick="showCFCreateModal()" style="margin-left:0.4rem">☁ CF 创建</button>
     `;
   }
 
-  const domains = await api.domains();
-  const pending  = (domains||[]).filter(d => d.status === 'pending');
-  const active   = (domains||[]).filter(d => d.status !== 'pending');
+  const payload = await api.domainsPayload();
+  const domains = Array.isArray(payload) ? payload : (payload.domains || []);
+  const summary = payload.summary || {
+    total: domains.length,
+    active: domains.filter(d => d.status === 'active').length,
+    pending: domains.filter(d => d.status === 'pending').length,
+    disabled: domains.filter(d => d.status === 'disabled').length,
+  };
+  const query = (state.adminDomainQuery || '').trim().toLowerCase();
+  const statusFilter = state.adminDomainStatus || 'all';
+  const hostnameFilter = state.adminDomainHostname || 'all';
+  const hostnameOptions = [...new Set(domains.map(d => (d.hostname || '').trim()).filter(Boolean))].sort();
+  const filtered = domains.filter(d => {
+    if (statusFilter !== 'all' && d.status !== statusFilter) return false;
+    if (hostnameFilter !== 'all' && (d.hostname || '') !== hostnameFilter) return false;
+    if (query && !String(d.domain || '').toLowerCase().includes(query)) return false;
+    return true;
+  });
+  const pending = filtered.filter(d => d.status === 'pending');
+  const regular = filtered.filter(d => d.status !== 'pending');
+  const selectedIds = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]);
 
   container.innerHTML = `
-    <div style="max-width:760px;display:flex;flex-direction:column;gap:1rem">
+    <div style="max-width:1120px;display:flex;flex-direction:column;gap:1rem">
+      <div class="card">
+        <div class="card-body" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.8rem">
+          <div><div style="font-size:1.2rem;font-weight:700">${summary.total || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">总域名</div></div>
+          <div><div style="font-size:1.2rem;font-weight:700">${summary.active || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Active</div></div>
+          <div><div style="font-size:1.2rem;font-weight:700">${summary.pending || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Pending</div></div>
+          <div><div style="font-size:1.2rem;font-weight:700">${summary.disabled || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Disabled</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-body" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0.8rem;align-items:end">
+          <div class="form-group" style="margin:0">
+            <label class="form-label">搜索域名</label>
+            <input class="form-input" value="${escHtml(state.adminDomainQuery || '')}" placeholder="按域名关键字过滤" oninput="adminDomainSetFilter('query', this.value)" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">状态筛选</label>
+            <select class="form-input" onchange="adminDomainSetFilter('status', this.value)">
+              <option value="all" ${statusFilter === 'all' ? 'selected' : ''}>全部状态</option>
+              <option value="active" ${statusFilter === 'active' ? 'selected' : ''}>active</option>
+              <option value="pending" ${statusFilter === 'pending' ? 'selected' : ''}>pending</option>
+              <option value="disabled" ${statusFilter === 'disabled' ? 'selected' : ''}>disabled</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">Hostname 筛选</label>
+            <select class="form-input" onchange="adminDomainSetFilter('hostname', this.value)">
+              <option value="all">全部 Hostname</option>
+              ${hostnameOptions.map(h => `<option value="${escHtml(h)}" ${hostnameFilter === h ? 'selected' : ''}>${escHtml(h)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-body" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(true)">全选当前结果</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(false)">清空选择</button>
+          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(true)">批量启用</button>
+          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(false)">批量停用</button>
+          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(false)">批量删除本地</button>
+          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(true)">批量删除并删 CF</button>
+          <span style="font-size:0.78rem;color:var(--text-muted)">已选 ${selectedIds.length} 个，当前结果 ${filtered.length} 个</span>
+        </div>
+      </div>
+
       ${pending.length > 0 ? `
         <div class="card" style="border-left:3px solid var(--clr-warn,#e6a817)">
           <div class="card-header">
@@ -1405,14 +1481,18 @@ async function renderAdminDomains(container) {
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>域名</th><th>上次检测</th><th>操作</th></tr></thead>
+              <thead><tr><th></th><th>域名</th><th>Hostname</th><th>上次检测</th><th>操作</th></tr></thead>
               <tbody id="pending-domains-tbody">
                 ${pending.map(d => `
                   <tr id="pending-row-${d.id}">
+                    <td><input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" /></td>
                     <td style="font-family:var(--font-mono)">${escHtml(d.domain)}</td>
+                    <td style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</td>
                     <td style="font-size:0.78rem">${d.mx_checked_at ? timeAgo(d.mx_checked_at) : '从未'}</td>
                     <td>
                       <span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span>
+                      <button class="btn btn-ghost btn-sm" style="margin-left:0.4rem" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                      <button class="btn btn-danger btn-sm" style="margin-left:0.4rem" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
                       <button class="btn btn-danger btn-sm" style="margin-left:0.4rem" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">✕</button>
                     </td>
                   </tr>
@@ -1426,21 +1506,25 @@ async function renderAdminDomains(container) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">🌐 域名列表</div>
-          <div style="font-size:0.78rem;color:var(--text-muted)">共 ${active.length} 个</div>
+          <div style="font-size:0.78rem;color:var(--text-muted)">共 ${regular.length} 个</div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>域名</th><th>状态</th><th>操作</th></tr></thead>
+            <thead><tr><th></th><th>域名</th><th>Hostname</th><th>状态</th><th>操作</th></tr></thead>
             <tbody>
-              ${active.length === 0 ? `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">暂无域名</td></tr>` :
-                active.map(d => `
+              ${regular.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">暂无域名</td></tr>` :
+                regular.map(d => `
                   <tr>
+                    <td><input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" /></td>
                     <td style="font-family:var(--font-mono)">${escHtml(d.domain)}</td>
+                    <td style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</td>
                     <td>${d.is_active
                       ? '<span class="badge badge-green">● 启用</span>'
                       : '<span class="badge badge-gray">○ 停用</span>'}</td>
                     <td style="display:flex;gap:0.5rem;align-items:center">
+                      <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
                       <button class="btn btn-ghost btn-sm" onclick="toggleDomain(${d.id},${!d.is_active})">${d.is_active ? '停用' : '启用'}</button>
+                      <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
                       <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">删除</button>
                     </td>
                   </tr>
@@ -1457,6 +1541,32 @@ async function renderAdminDomains(container) {
     startPendingDomainPoller(pending.map(d => d.id));
   }
 }
+
+window.adminDomainSetFilter = function(kind, value) {
+  if (kind === 'query') state.adminDomainQuery = value;
+  if (kind === 'status') state.adminDomainStatus = value;
+  if (kind === 'hostname') state.adminDomainHostname = value;
+  renderPage('admin-domains');
+};
+
+window.toggleAdminDomainSelection = function(id, checked) {
+  state.adminDomainSelection[id] = !!checked;
+};
+
+window.toggleAllAdminDomains = async function(checked) {
+  const payload = await api.domainsPayload();
+  const domains = Array.isArray(payload) ? payload : (payload.domains || []);
+  const query = (state.adminDomainQuery || '').trim().toLowerCase();
+  const statusFilter = state.adminDomainStatus || 'all';
+  const hostnameFilter = state.adminDomainHostname || 'all';
+  domains.forEach(d => {
+    const match = (statusFilter === 'all' || d.status === statusFilter) &&
+      (hostnameFilter === 'all' || (d.hostname || '') === hostnameFilter) &&
+      (!query || String(d.domain || '').toLowerCase().includes(query));
+    if (match) state.adminDomainSelection[d.id] = !!checked;
+  });
+  renderPage('admin-domains');
+};
 
 window.showAddDomainModal = function() {
   const old = document.querySelector('.modal-overlay');
@@ -1482,6 +1592,11 @@ window.showAddDomainModal = function() {
           <input class="form-input" id="add-domain-inp" placeholder="example.com" autofocus />
           <div class="form-hint">输入将用于接收邮件的顶级域名</div>
         </div>
+        <div class="form-group" style="margin-bottom:0.5rem">
+          <label class="form-label">域名 Hostname（可选）</label>
+          <input class="form-input" id="add-hostname-inp" placeholder="mail.example.com" />
+          <div class="form-hint">留空时回退系统级 smtp_hostname；若也为空则使用 mail.&lt;domain&gt;</div>
+        </div>
         <div id="add-dns-hint" style="background:var(--bg-secondary);border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.8rem;font-size:0.8rem">
           <b>需要配置的 DNS 记录：</b>
           <table style="margin-top:0.5rem;width:100%;border-collapse:collapse;font-size:0.76rem">
@@ -1504,14 +1619,17 @@ window.showAddDomainModal = function() {
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
   const inp = overlay.querySelector('#add-domain-inp');
+  const hostnameInp = overlay.querySelector('#add-hostname-inp');
   inp?.addEventListener('keydown', e => { if (e.key === 'Enter') window.doAddDomainCheck(false); });
   inp?.addEventListener('input', updateDnsHint);
+  hostnameInp?.addEventListener('input', updateDnsHint);
 
   function updateDnsHint() {
     const d = (inp?.value || '').trim() || 'example.com';
     const ip = serverIP || '&lt;服务器IP&gt;';
-    const hn = serverHostname || 'mail.' + d;
-    const hasHostname = !!serverHostname;
+    const customHostname = (hostnameInp?.value || '').trim();
+    const hn = customHostname || serverHostname || 'mail.' + d;
+    const hasHostname = !!(customHostname || serverHostname);
     const tbody = document.getElementById('add-dns-rows');
     if (!tbody) return;
     tbody.innerHTML = `
@@ -1524,6 +1642,7 @@ window.showAddDomainModal = function() {
 
   window.doAddDomainCheck = async function(force) {
     const domain = (inp?.value || '').trim().toLowerCase();
+    const hostname = (hostnameInp?.value || '').trim();
     if (!domain) { toast('请输入域名', 'warn'); return; }
     const checkBtn = document.getElementById('add-check-btn');
     const forceBtn = document.getElementById('add-force-btn');
@@ -1533,7 +1652,9 @@ window.showAddDomainModal = function() {
     try {
       if (force) {
         // 强制直接添加（跳过 MX 检测）
-        const r = await api.admin.addDomain({ domain });
+        const body = { domain };
+        if (hostname) body.hostname = hostname;
+        const r = await api.admin.addDomain(body);
         showDnsInstructions(domain, r);
         overlay.remove();
         return;
@@ -1542,7 +1663,9 @@ window.showAddDomainModal = function() {
       // 先做 MX 检测（force:false）
       let r;
       try {
-        r = await api.admin.mxImport({ domain, force: false });
+        const body = { domain, force: false };
+        if (hostname) body.hostname = hostname;
+        r = await api.admin.mxImport(body);
         // MX 通过 → 已添加
         const step1 = document.getElementById('add-step1');
         const step2 = document.getElementById('add-step2');
@@ -1633,6 +1756,116 @@ window.confirmDeleteDomain = function(id, name) {
   });
 };
 
+window.confirmCFDeleteDomain = function(id, name) {
+  showModal('CF 删除域名', `<p>确定删除域名 <strong>${escHtml(name)}</strong> 并联动删除 Cloudflare MX 记录？</p><p style="font-size:0.8rem;color:var(--clr-danger);margin-top:0.5rem">⚠ 将同时删除本地域名及其下所有邮箱和邮件。</p>`, async () => {
+    try {
+      await api.admin.deleteDomainCF(id);
+      toast('域名及 Cloudflare MX 已删除', 'success');
+      navigate('admin-domains');
+    } catch(e) { toast('删除失败: ' + e.message, 'error'); }
+  });
+};
+
+window.showEditDomainHostnameModal = function(id, domain, hostname) {
+  showModal('编辑域名 Hostname', `
+    <div class="form-group">
+      <label class="form-label">域名</label>
+      <input class="form-input" value="${escHtml(domain)}" disabled />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Hostname（可选）</label>
+      <input class="form-input" id="edit-domain-hostname" value="${escHtml(hostname || '')}" placeholder="mail.example.com" />
+      <div class="form-hint">留空时回退系统级 smtp_hostname 或 mail.&lt;domain&gt;</div>
+    </div>
+  `, async () => {
+    try {
+      const value = ($('edit-domain-hostname')?.value || '').trim();
+      await api.admin.updateDomainHostname(id, value);
+      toast('Hostname 已更新', 'success');
+      navigate('admin-domains');
+    } catch(e) { toast('更新失败: ' + e.message, 'error'); return false; }
+  });
+};
+
+window.batchToggleDomains = async function(active) {
+  const ids = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]).map(Number);
+  if (!ids.length) return;
+  try {
+    await api.admin.batchToggleDomains(ids, active);
+    toast(active ? '已批量启用' : '已批量停用', 'success');
+    navigate('admin-domains');
+  } catch(e) { toast('批量操作失败: ' + e.message, 'error'); }
+};
+
+window.confirmBatchDeleteDomains = function(deleteCloudflare) {
+  const ids = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]).map(Number);
+  if (!ids.length) return;
+  const title = deleteCloudflare ? '批量删除并联动 CF' : '批量删除域名';
+  const body = deleteCloudflare
+    ? `<p>确定删除选中的 <strong>${ids.length}</strong> 个域名，并联动删除 Cloudflare MX？</p><p style="font-size:0.8rem;color:var(--clr-danger);margin-top:0.5rem">⚠ 将同时删除本地域名及其下所有邮箱和邮件。</p>`
+    : `<p>确定删除选中的 <strong>${ids.length}</strong> 个域名？</p>`;
+  showModal(title, body, async () => {
+    try {
+      const res = await api.admin.batchDeleteDomains(ids, deleteCloudflare);
+      const failed = (res.results || []).filter(r => r.error).length;
+      toast(failed ? `批量完成，成功 ${res.deleted}，失败 ${failed}` : `已批量删除 ${res.deleted} 个域名`, failed ? 'warn' : 'success');
+      state.adminDomainSelection = {};
+      navigate('admin-domains');
+    } catch(e) { toast('批量删除失败: ' + e.message, 'error'); }
+  });
+};
+
+window.showCFCreateModal = function() {
+  const old = document.querySelector('.modal-overlay');
+  if (old) old.remove();
+  const overlay = el('div', 'modal-overlay');
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:560px">
+      <div class="modal-title">☁ Cloudflare 自动创建 MX</div>
+      <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      <div class="form-group">
+        <label class="form-label">完整域名</label>
+        <input class="form-input" id="cfc-domain" placeholder="sub.example.com" autofocus />
+      </div>
+      <div class="form-group">
+        <label class="form-label">MX Hostname</label>
+        <input class="form-input" id="cfc-hostname" placeholder="mail.example.com" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Cloudflare Zone（可选）</label>
+        <input class="form-input" id="cfc-zone" placeholder="example.com" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="btn btn-primary" id="cfc-submit">创建</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('#cfc-submit').addEventListener('click', async () => {
+    const btn = overlay.querySelector('#cfc-submit');
+    const domain = (overlay.querySelector('#cfc-domain')?.value || '').trim().toLowerCase();
+    const hostname = (overlay.querySelector('#cfc-hostname')?.value || '').trim();
+    const zone = (overlay.querySelector('#cfc-zone')?.value || '').trim();
+    if (!domain || !hostname) { toast('请填写域名和 Hostname', 'warn'); return; }
+    btn.disabled = true;
+    btn.textContent = '创建中...';
+    try {
+      const body = { domain, hostname };
+      if (zone) body.zone = zone;
+      await api.admin.cfCreateDomain(body);
+      toast('Cloudflare MX 已创建，域名已入池', 'success');
+      overlay.remove();
+      navigate('admin-domains');
+    } catch(e) {
+      btn.disabled = false;
+      btn.textContent = '创建';
+      toast('创建失败: ' + e.message, 'error');
+    }
+  });
+};
+
 // ─── Admin: 系统设置 ─────────────────────────────────────────
 async function renderAdminSettings(container) {
   let settings = {};
@@ -1646,6 +1879,7 @@ async function renderAdminSettings(container) {
   const ttlMins    = settings.mailbox_ttl_minutes   || '30';
   const catchallEnabled = settings.catchall_enabled === 'true' || settings.catchall_enabled === true;
   const catchallAccountId = settings.catchall_account_id || '';
+  const cfApiToken = settings.cf_api_token || '';
   const announce   = settings.announcement          || '';
   const maxMb      = settings.max_mailboxes_per_user|| '5';
 
@@ -1723,6 +1957,16 @@ async function renderAdminSettings(container) {
           </div>
         </div>
         ${inputRow('input-catchall-account-id', 'Catch-all 归属账号 ID', catchallAccountId, '留空则自动归属首个管理员账号', '留空使用首个管理员')}
+        <div class="divider"></div>
+
+        <div class="form-group">
+          <label class="form-label">Cloudflare API Token</label>
+          <div style="display:flex;gap:0.5rem">
+            <input class="form-input" id="input-cf-api-token" type="password" value="${escHtml(cfApiToken)}" placeholder="填写具有 Zone:DNS:Edit 权限的 Token" style="flex:1" />
+            <button class="btn btn-primary btn-sm" onclick="saveSetting('input-cf-api-token','cf_api_token')">✓ 保存</button>
+          </div>
+          <div class="form-hint">仅管理员可用；用于自动创建/删除 Cloudflare MX 记录。</div>
+        </div>
         <div class="divider"></div>
 
         <!-- 每用户邮箱上限 -->
@@ -1853,6 +2097,7 @@ function startPendingDomainPoller(ids) {
 }
 
 window.showMXRegisterModal = function() {
+  const isAdmin = !!state.account?.is_admin;
   const old = document.querySelector('.modal-overlay');
   if (old) old.remove();
   const overlay = el('div', 'modal-overlay');
@@ -1868,6 +2113,12 @@ window.showMXRegisterModal = function() {
         <label class="form-label">域名（如 example.com）</label>
         <input class="form-input" id="mxr-domain" placeholder="example.com" autofocus />
       </div>
+      ${isAdmin ? `
+      <div class="form-group">
+        <label class="form-label">Hostname（可选）</label>
+        <input class="form-input" id="mxr-hostname" placeholder="mail.example.com" />
+        <div class="form-hint">管理员可为该域名单独指定 MX Hostname；留空则沿用全局默认。</div>
+      </div>` : ''}
       <div id="mxr-dns-hint" style="display:none;background:var(--bg-secondary);border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.6rem;font-size:0.8rem">
         <b>请在 DNS 管理面板添加以下记录：</b>
         <table style="margin-top:0.5rem;width:100%;border-collapse:collapse;font-size:0.76rem">
@@ -1893,6 +2144,7 @@ window.showMXRegisterModal = function() {
 
   async function submitMXRegister() {
     const domain = (inp?.value || '').trim().toLowerCase();
+    const hostname = (overlay.querySelector('#mxr-hostname')?.value || '').trim();
     if (!domain) { toast('请输入域名', 'warn'); return; }
     const btn    = overlay.querySelector('#mxr-submit');
     const status = overlay.querySelector('#mxr-status');
@@ -1903,7 +2155,9 @@ window.showMXRegisterModal = function() {
 
     const domainListPage = state.account?.is_admin ? 'admin-domains' : 'domains-guide';
     try {
-      const r = await api.submitDomain({ domain }); // 任意已登录用户可用
+      const body = { domain };
+      if (isAdmin && hostname) body.hostname = hostname;
+      const r = isAdmin ? await api.admin.mxRegister(body) : await api.submitDomain(body);
       if (r.status === 'active') {
         overlay.innerHTML = `
           <div class="modal" style="text-align:center;padding:2rem">
@@ -2048,20 +2302,67 @@ curl -s ${base}/api/mailboxes/$MAILBOX_ID/emails/$EMAIL_ID \\
   -H "Authorization: Bearer ${key}"`,
     },
     {
-      title: '🗑 5. 删除邮箱',
+      title: '🔢 5. 提取最新一封邮件 OTP',
+      desc: 'GET /api/mailboxes/:id/otp/latest — 直接返回该邮箱最新邮件中的验证码',
+      code: `MAILBOX_ID="你的邮箱UUID"
+curl -s ${base}/api/mailboxes/$MAILBOX_ID/otp/latest \\
+  -H "Authorization: Bearer ${key}"
+
+# 可能返回：
+#   200 → {"otp":{"code":"528193",...}}
+#   404 → 邮箱不存在 / 无邮件
+#   422 → 最新邮件未识别到 OTP`,
+    },
+    {
+      title: '🗑 6. 删除邮箱',
       desc: 'DELETE /api/mailboxes/:id — 立即删除邮箱及其所有邮件',
       code: `MAILBOX_ID="你的邮箱UUID"
 curl -s -X DELETE ${base}/api/mailboxes/$MAILBOX_ID \\
   -H "Authorization: Bearer ${key}"`,
     },
     {
-      title: '🗑 6. 删除单封邮件',
+      title: '🗑 7. 删除单封邮件',
       desc: 'DELETE /api/mailboxes/:id/emails/:email_id',
       code: `curl -s -X DELETE ${base}/api/mailboxes/$MAILBOX_ID/emails/$EMAIL_ID \\
   -H "Authorization: Bearer ${key}"`,
     },
     {
-      title: '🧪 7. 完整自动化示例（Shell 脚本）',
+      title: '☁ 8. Cloudflare / 域名管理（管理员）',
+      desc: '新增的管理员域名接口示例',
+      code: `# 更新域名 hostname
+curl -s -X PUT ${base}/api/admin/domains/12/hostname \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"hostname":"mail.example.com"}'
+
+# 通过 Cloudflare 创建 MX 并加入域名池
+curl -s -X POST ${base}/api/admin/domains/cf-create \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"domain":"sub.example.com","hostname":"mail.example.com"}'
+
+# 删除 Cloudflare MX 并删除本地域名
+curl -s -X DELETE ${base}/api/admin/domains/12/cf \\
+  -H "Authorization: Bearer ${key}"
+
+# 批量启停
+curl -s -X PUT ${base}/api/admin/domains/batch/toggle \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"ids":[1,2,3],"active":true}'
+
+# 批量删除（可选联动 Cloudflare）
+curl -s -X PUT ${base}/api/admin/domains/batch/delete \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"ids":[1,2,3],"delete_cloudflare":true}'
+
+# 域名筛选
+curl -s "${base}/api/domains?status=active&hostname=mail.example.com&q=example" \\
+  -H "Authorization: Bearer ${key}"`,
+    },
+    {
+      title: '🧪 9. 完整自动化示例（Shell 脚本）',
       desc: '创建邮箱 → 等待 5 秒 → 读取邮件 → 清理',
       code: `#!/bin/bash
 BASE="${base}"
@@ -2098,7 +2399,7 @@ curl -s -X DELETE $BASE/api/mailboxes/$MB_ID \\
 echo "✓ 邮箱已删除"`,
     },
     {
-      title: '📈 8. 并发压测示例（wrk）',
+      title: '📈 10. 并发压测示例（wrk）',
       desc: '对注册接口进行高并发压测，500 并发，持续 30 秒',
       code: `# 安装 wrk: apt install wrk
 

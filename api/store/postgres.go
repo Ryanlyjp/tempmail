@@ -21,6 +21,12 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+type DomainFilter struct {
+	Status   string
+	Hostname string
+	Query    string
+}
+
 // New 创建带连接池的 Store（高并发核心）
 func New(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
@@ -70,6 +76,8 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes (expires_at)`,
 		`ALTER TABLE domains
 			ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE domains
+			ADD COLUMN IF NOT EXISTS hostname VARCHAR(255) NOT NULL DEFAULT ''`,
 		`UPDATE domains
 			SET status = CASE WHEN is_active THEN 'active' ELSE 'disabled' END
 			WHERE status <> 'pending'`,
@@ -96,6 +104,8 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 		`INSERT INTO app_settings (key, value) VALUES ('catchall_enabled', 'false')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('cf_api_token', '')
 			ON CONFLICT (key) DO NOTHING`,
 	}
 
@@ -176,13 +186,13 @@ func (s *Store) GetAdminAPIKey(ctx context.Context) (string, error) {
 
 // ==================== Domain ====================
 
-func (s *Store) AddDomain(ctx context.Context, domain string) (*model.Domain, error) {
+func (s *Store) AddDomain(ctx context.Context, domain, hostname string) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO domains (domain, is_active, status) VALUES ($1, TRUE, 'active')
-		 RETURNING id, domain, is_active, status, created_at, mx_checked_at`,
-		strings.ToLower(domain),
-	).Scan(&d.ID, &d.Domain, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+		`INSERT INTO domains (domain, hostname, is_active, status) VALUES ($1, $2, TRUE, 'active')
+		 RETURNING id, domain, hostname, is_active, status, created_at, mx_checked_at`,
+		strings.ToLower(domain), strings.TrimSpace(hostname),
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -190,16 +200,17 @@ func (s *Store) AddDomain(ctx context.Context, domain string) (*model.Domain, er
 }
 
 // AddDomainPending 添加待验证域名（后台轮询 MX 记录）
-func (s *Store) AddDomainPending(ctx context.Context, domain string) (*model.Domain, error) {
+func (s *Store) AddDomainPending(ctx context.Context, domain, hostname string) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO domains (domain, is_active, status) VALUES ($1, FALSE, 'pending')
+		`INSERT INTO domains (domain, hostname, is_active, status) VALUES ($1, $2, FALSE, 'pending')
 		 ON CONFLICT (domain) DO UPDATE
 		   SET status = CASE WHEN domains.status = 'active' THEN 'active' ELSE 'pending' END,
-		       is_active = CASE WHEN domains.status = 'active' THEN TRUE ELSE FALSE END
-		 RETURNING id, domain, is_active, status, created_at, mx_checked_at`,
-		strings.ToLower(domain),
-	).Scan(&d.ID, &d.Domain, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+		       is_active = CASE WHEN domains.status = 'active' THEN TRUE ELSE FALSE END,
+		       hostname = CASE WHEN EXCLUDED.hostname <> '' THEN EXCLUDED.hostname ELSE domains.hostname END
+		 RETURNING id, domain, hostname, is_active, status, created_at, mx_checked_at`,
+		strings.ToLower(domain), strings.TrimSpace(hostname),
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +219,8 @@ func (s *Store) AddDomainPending(ctx context.Context, domain string) (*model.Dom
 
 func (s *Store) ListDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, domain, is_active, status, created_at, mx_checked_at FROM domains ORDER BY created_at`)
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		 FROM domains ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -216,9 +228,63 @@ func (s *Store) ListDomains(ctx context.Context) ([]model.Domain, error) {
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[model.Domain])
 }
 
+func (s *Store) ListDomainsFiltered(ctx context.Context, filter DomainFilter) ([]model.Domain, error) {
+	where := []string{"TRUE"}
+	args := []any{}
+	argPos := 1
+
+	if filter.Status != "" {
+		where = append(where, fmt.Sprintf("status = $%d", argPos))
+		args = append(args, filter.Status)
+		argPos++
+	}
+	if filter.Hostname != "" {
+		where = append(where, fmt.Sprintf("hostname = $%d", argPos))
+		args = append(args, strings.TrimSpace(filter.Hostname))
+		argPos++
+	}
+	if filter.Query != "" {
+		where = append(where, fmt.Sprintf("domain ILIKE $%d", argPos))
+		args = append(args, "%"+strings.TrimSpace(filter.Query)+"%")
+		argPos++
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		 FROM domains
+		 WHERE %s
+		 ORDER BY created_at`,
+		strings.Join(where, " AND "),
+	)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[model.Domain])
+}
+
+func (s *Store) GetDomainSummary(ctx context.Context) (*model.DomainSummary, error) {
+	var summary model.DomainSummary
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+		  COUNT(*) AS total,
+		  COUNT(*) FILTER (WHERE status = 'active') AS active,
+		  COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+		  COUNT(*) FILTER (WHERE status = 'disabled') AS disabled
+		FROM domains`,
+	).Scan(&summary.Total, &summary.Active, &summary.Pending, &summary.Disabled)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
 func (s *Store) GetActiveDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, domain, is_active, status, created_at, mx_checked_at FROM domains WHERE is_active = TRUE`)
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		 FROM domains WHERE is_active = TRUE`)
 	if err != nil {
 		return nil, err
 	}
@@ -229,9 +295,9 @@ func (s *Store) GetActiveDomains(ctx context.Context) ([]model.Domain, error) {
 func (s *Store) GetRandomActiveDomain(ctx context.Context) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, domain, is_active, status, created_at, mx_checked_at FROM domains
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at FROM domains
 		 WHERE is_active = TRUE ORDER BY RANDOM() LIMIT 1`,
-	).Scan(&d.ID, &d.Domain, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -242,10 +308,10 @@ func (s *Store) GetRandomActiveDomain(ctx context.Context) (*model.Domain, error
 func (s *Store) GetDomainByName(ctx context.Context, domain string) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, domain, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
 		 FROM domains WHERE domain = $1 AND is_active = TRUE`,
 		strings.ToLower(domain),
-	).Scan(&d.ID, &d.Domain, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -255,9 +321,9 @@ func (s *Store) GetDomainByName(ctx context.Context, domain string) (*model.Doma
 func (s *Store) GetDomainByID(ctx context.Context, domainID int) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, domain, is_active, status, created_at, mx_checked_at FROM domains WHERE id = $1`,
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at FROM domains WHERE id = $1`,
 		domainID,
-	).Scan(&d.ID, &d.Domain, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +333,7 @@ func (s *Store) GetDomainByID(ctx context.Context, domainID int) (*model.Domain,
 // ListPendingDomains 返回所有待验证域名
 func (s *Store) ListPendingDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, domain, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
 		 FROM domains WHERE status = 'pending'
 		 ORDER BY created_at`)
 	if err != nil {
@@ -306,6 +372,11 @@ func (s *Store) DeleteDomain(ctx context.Context, domainID int) error {
 	return err
 }
 
+func (s *Store) UpdateDomainHostname(ctx context.Context, domainID int, hostname string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE domains SET hostname = $1 WHERE id = $2`, strings.TrimSpace(hostname), domainID)
+	return err
+}
+
 func (s *Store) ToggleDomain(ctx context.Context, domainID int, active bool) error {
 	status := "disabled"
 	if active {
@@ -314,6 +385,31 @@ func (s *Store) ToggleDomain(ctx context.Context, domainID int, active bool) err
 	_, err := s.pool.Exec(ctx,
 		`UPDATE domains SET is_active = $1, status = $2 WHERE id = $3`, active, status, domainID)
 	return err
+}
+
+func (s *Store) BatchToggleDomains(ctx context.Context, ids []int, active bool) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	status := "disabled"
+	if active {
+		status = "active"
+	}
+	args := []any{active, status}
+	placeholders := make([]string, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
+	query := fmt.Sprintf(
+		`UPDATE domains SET is_active = $1, status = $2 WHERE id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	tag, err := s.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // GetStats 返回全局统计数据
@@ -571,6 +667,22 @@ func (s *Store) ListEmails(ctx context.Context, mailboxID uuid.UUID, page, size 
 		return nil, 0, err
 	}
 	return emails, total, nil
+}
+
+func (s *Store) GetLatestEmail(ctx context.Context, mailboxID uuid.UUID) (*model.Email, error) {
+	var e model.Email
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, mailbox_id, sender, subject, body_text, body_html, raw_message, size_bytes, received_at
+		 FROM emails
+		 WHERE mailbox_id = $1
+		 ORDER BY received_at DESC
+		 LIMIT 1`,
+		mailboxID,
+	).Scan(&e.ID, &e.MailboxID, &e.Sender, &e.Subject, &e.BodyText, &e.BodyHTML, &e.RawMessage, &e.SizeBytes, &e.ReceivedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 func (s *Store) GetEmail(ctx context.Context, emailID uuid.UUID, mailboxID uuid.UUID) (*model.Email, error) {

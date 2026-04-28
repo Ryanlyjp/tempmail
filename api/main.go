@@ -113,6 +113,7 @@ func main() {
 		// 邮件管理
 		api.GET("/mailboxes/:id/emails", emailH.List)
 		api.GET("/mailboxes/:id/emails/:email_id", emailH.Get)
+		api.GET("/mailboxes/:id/otp/latest", emailH.LatestOTP)
 		api.DELETE("/mailboxes/:id/emails/:email_id", emailH.Delete)
 		// 管理员路由
 		admin := api.Group("/admin")
@@ -124,7 +125,12 @@ func main() {
 
 			admin.POST("/domains", domainH.Add)
 			admin.DELETE("/domains/:id", domainH.Delete)
+			admin.DELETE("/domains/:id/cf", domainH.CFDelete)
 			admin.PUT("/domains/:id/toggle", domainH.Toggle)
+			admin.PUT("/domains/:id/hostname", domainH.UpdateHostname)
+			admin.PUT("/domains/batch/toggle", domainH.BatchToggle)
+			admin.PUT("/domains/batch/delete", domainH.BatchDelete)
+			admin.POST("/domains/cf-create", domainH.CFCreate)
 			admin.POST("/domains/mx-import", domainH.MXImport)
 			admin.POST("/domains/mx-register", domainH.MXRegister)
 			admin.GET("/domains/:id/status", domainH.GetStatus)

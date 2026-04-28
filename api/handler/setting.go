@@ -23,9 +23,9 @@ func (h *SettingHandler) GetPublic(c *gin.Context) {
 		regOpen = "false"
 	}
 	siteTitle, _ := h.store.GetSetting(c.Request.Context(), "site_title")
-	smtpIP, _    := h.store.GetSetting(c.Request.Context(), "smtp_server_ip")
+	smtpIP, _ := h.store.GetSetting(c.Request.Context(), "smtp_server_ip")
 	smtpHostname, _ := h.store.GetSetting(c.Request.Context(), "smtp_hostname")
-	announce, _  := h.store.GetSetting(c.Request.Context(), "announcement")
+	announce, _ := h.store.GetSetting(c.Request.Context(), "announcement")
 	c.JSON(http.StatusOK, gin.H{
 		"registration_open": regOpen == "true",
 		"site_title":        siteTitle,
@@ -66,6 +66,7 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"mailbox_ttl_minutes":    true,
 		"catchall_enabled":       true,
 		"catchall_account_id":    true,
+		"cf_api_token":           true,
 	}
 
 	for k, v := range req {

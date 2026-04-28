@@ -19,12 +19,20 @@ type Account struct {
 }
 
 type Domain struct {
-	ID           int        `json:"id"`
-	Domain       string     `json:"domain"`
-	IsActive     bool       `json:"is_active"`
-	Status       string     `json:"status"` // active | pending | disabled
-	CreatedAt    time.Time  `json:"created_at"`
-	MxCheckedAt  *time.Time `json:"mx_checked_at,omitempty"`
+	ID          int        `json:"id"`
+	Domain      string     `json:"domain"`
+	Hostname    string     `json:"hostname"`
+	IsActive    bool       `json:"is_active"`
+	Status      string     `json:"status"` // active | pending | disabled
+	CreatedAt   time.Time  `json:"created_at"`
+	MxCheckedAt *time.Time `json:"mx_checked_at,omitempty"`
+}
+
+type DomainSummary struct {
+	Total    int `json:"total"`
+	Active   int `json:"active"`
+	Pending  int `json:"pending"`
+	Disabled int `json:"disabled"`
 }
 
 type Stats struct {
@@ -109,4 +117,14 @@ type EmailSummary struct {
 	Subject    string    `json:"subject"`
 	SizeBytes  int       `json:"size_bytes"`
 	ReceivedAt time.Time `json:"received_at"`
+}
+
+type LatestOTPResponse struct {
+	MailboxID   uuid.UUID `json:"mailbox_id"`
+	FullAddress string    `json:"full_address"`
+	EmailID     uuid.UUID `json:"email_id"`
+	Code        string    `json:"code"`
+	Subject     string    `json:"subject"`
+	Sender      string    `json:"sender"`
+	ReceivedAt  time.Time `json:"received_at"`
 }

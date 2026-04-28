@@ -1,24 +1,54 @@
 # TempMail
 
-一个自托管临时邮件服务平台，支持多域名、用户自助提交域名、MX 自动验证与自动禁用、API Key 鉴权及 Web 管理后台。
+一个自托管临时邮件平台，基于 `PostgreSQL + PgBouncer + Redis + Go API + Nginx + Postfix`。当前版本已经明显偏离原始项目，重点能力包括：
+
+- catch-all 自动建箱
+- 收藏邮箱防过期
+- 三栏式邮箱总览 UI
+- 域名 MX 自动验证与健康巡检
+- 每域名可选 `hostname`
+- Cloudflare MX 自动创建 / 删除
+- 域名批量管理、筛选与状态统计
+- 最新一封邮件 OTP 提取 API
 
 ---
 
-## 功能特性
+## 功能概览
 
 | 功能 | 说明 |
 |------|------|
-| 邮箱管理 | 按需创建临时邮箱，可配置 TTL（默认 30 分钟），自动清理 |
-| 多域名池 | 多个域名轮流供用户创建邮箱，管理员或普通用户均可提交新域名 |
-| MX 自动验证 | 提交域名后后台每 30 秒轮询 MX 记录，通过即自动激活，无需管理员确认 |
-| 域名健康监控 | 每 6 小时重检已激活域名，MX 失效自动暂停（`status=disabled`）|
-| IP / Hostname 分离 | 服务器 IP 与邮件主机名通过环境变量或后台设置注入，不写入代码 |
-| API Key 鉴权 | 每用户独立 API Key（`X-API-Key` 头），速率限制 500 次/分钟 |
-| 管理后台 | Web GUI 管理账户、域名、邮件、系统配置（含 SMTP Hostname）|
-| Dashboard 统计 | 实时展示邮箱数、邮件数、域名数、账户数 |
-| 公告系统 | 管理员可设置公告，用户登录后显示 |
-| 速率限制 | Redis 滑动窗口，默认 500 请求/60 秒/令牌 |
-| 连接池 | PgBouncer 事务模式，支持 2000 并发客户端 |
+| 临时邮箱 | 创建临时邮箱，默认 TTL 30 分钟，自动清理 |
+| Catch-all | 已托管域名下的未知地址可自动建箱并落到指定账号 |
+| 收藏邮箱 | 收藏后不参与过期清理，取消收藏后恢复 TTL |
+| 三栏 Dashboard | 左栏邮箱、中栏邮件列表、右栏邮件正文，支持快速取码 |
+| OTP 提取 | 前端一键取码，后端提供最新邮件 OTP API |
+| 多域名池 | 可指定域名建箱，也可随机选取激活域名 |
+| 域名验证 | 提交域名后后台每 30 秒轮询 MX，通过即自动激活 |
+| 域名巡检 | 每 6 小时重检激活域名，MX 失效会自动停用 |
+| 每域名 Hostname | 域名可单独指定 `hostname`，为空时回退全局 `smtp_hostname` |
+| Cloudflare 集成 | 管理员可通过 API / 后台自动创建、删除 MX 记录 |
+| 域名增强管理 | 支持筛选、状态统计、批量启用/停用/删除 |
+| API Key 鉴权 | 使用 `Authorization: Bearer <API_KEY>`，也兼容 `?api_key=` |
+| 管理后台 | 管理账户、域名、系统设置、公告、Cloudflare Token |
+| 高并发架构 | Redis 限流 + PgBouncer 事务池 + Go API |
+
+---
+
+## 部署架构
+
+服务组成：
+
+- `postgres`: 主数据库
+- `pgbouncer`: PostgreSQL 连接池
+- `redis`: 速率限制与缓存
+- `api`: Go 后端
+- `frontend`: Nginx 托管静态 SPA 并反代 API
+- `postfix`: SMTP 收件
+
+当前 `docker-compose.yml` 已改为本地构建镜像，源码改动会直接参与构建：
+
+- `api` → `build: ./api`
+- `postfix` → `build: ./postfix`
 
 ---
 
@@ -28,7 +58,7 @@
 
 - Docker 20.10+
 - Docker Compose v2+
-- 公网 IP / 域名（用于接收邮件）
+- 可接收邮件的公网 IP
 
 ### 1. 克隆并配置
 
@@ -36,16 +66,32 @@
 git clone <repo-url>
 cd tempmail
 cp .env.example .env
-# 编辑 .env，填写 SMTP_SERVER_IP 和 SMTP_HOSTNAME
+```
+
+至少填写：
+
+```dotenv
+POSTGRES_DB=tempmail
+POSTGRES_USER=tempmail
+POSTGRES_PASSWORD=change_me
+
+API_DB_DSN=postgres://tempmail:change_me@pgbouncer:6432/tempmail?sslmode=disable
+API_REDIS_ADDR=redis:6379
+API_REDIS_PASSWORD=change_me
+API_RATE_LIMIT=500
+API_RATE_WINDOW=60
+API_PORT=8080
+
+SMTP_SERVER_IP=1.2.3.4
+SMTP_HOSTNAME=mail.yourdomain.com
+REDIS_PASSWORD=change_me
 ```
 
 ### 2. 启动服务
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
-
-六个容器会自动启动：`postgres`、`pgbouncer`、`redis`、`api`、`frontend`（Nginx）、`postfix`。
 
 ### 3. 获取管理员 API Key
 
@@ -53,192 +99,305 @@ docker compose up -d
 
 ```bash
 cat data/admin.key
-# tm_admin_<自动生成的随机密钥>
 ```
 
-也可查看容器日志：
+### 4. 访问 Web
 
-```bash
-docker compose logs api | grep "ADMIN API KEY"
+浏览器打开：
+
+```text
+http://<服务器IP>
 ```
-
-### 4. 访问 Web 界面
-
-浏览器打开 `http://<服务器IP>`，在登录页输入管理员 API Key 登录。
 
 ---
 
-## 环境变量
+## 核心行为
 
-在项目根目录 `.env` 文件中配置（**所有含服务器 IP / 域名的信息均在此处填写，不写入代码**）：
+### 1. Catch-all 自动建箱
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `SMTP_SERVER_IP` | *(必填)* | 服务器公网 IP，用于 MX 验证与 SPF 生成 |
-| `SMTP_HOSTNAME` | *(推荐填写)* | 邮件服务器主机名，如 `mail.yourdomain.com`。设置后用户添加域名只需一条 MX 记录，无需 A 记录 |
-| `DATABASE_URL` | `postgres://tempmail:tempmail@pgbouncer:5432/tempmail` | 数据库连接串（经 PgBouncer）|
-| `REDIS_URL` | `redis://redis:6379` | Redis 连接地址 |
-| `API_PORT` | `8080` | API 监听端口 |
-| `API_RATE_LIMIT` | `500` | 每令牌每窗口期最大请求数 |
-| `API_RATE_WINDOW` | `60` | 速率窗口（秒）|
-| `ADMIN_KEY_FILE` | `/data/admin.key` | 管理员 Key 写入路径（容器内）|
+当 `catchall_enabled=true` 时，发往“已托管域名但未事先创建”的地址的邮件不会丢弃，而是：
 
-`.env` 示例：
+1. 检查收件域名是否在本系统中且处于激活状态
+2. 按 `catchall_account_id` 或首个管理员账号归属
+3. 自动创建该邮箱
+4. 继续按正常流程落邮件
 
-```dotenv
-SMTP_SERVER_IP=1.2.3.4
-SMTP_HOSTNAME=mail.yourdomain.com
-```
+相关系统设置：
 
-> `SMTP_SERVER_IP` / `SMTP_HOSTNAME` 也可在管理后台「系统设置」中修改，DB 值优先于环境变量。
+- `catchall_enabled`
+- `catchall_account_id`
+- `mailbox_ttl_minutes`
+
+### 2. 收藏邮箱
+
+- 收藏邮箱后不会被后台过期清理器删除
+- 取消收藏后，`expires_at` 会重置为 `now + mailbox_ttl_minutes`
+
+### 3. 每域名 Hostname
+
+域名可单独设置 `hostname`：
+
+- 若域名自身 `hostname` 非空，优先使用
+- 否则回退系统设置 `smtp_hostname`
+- 若仍为空，则回退 `mail.<domain>`
+
+这会影响：
+
+- DNS 提示
+- MX 自动注册提示
+- Cloudflare MX 创建 / 删除目标
 
 ---
 
-## 添加邮件域名
+## 域名管理
 
-任意已登录用户均可提交域名，管理员可在后台直接添加。
+### 用户侧
 
-### 方式一：用户自助提交（推荐）
+普通登录用户可以：
 
-1. 登录后进入「域名列表」→「⚡ 提交域名」
-2. 填写域名，系统会展示所需 DNS 记录
-3. 在 DNS 面板完成配置后提交：
-   - **MX 已生效** → 立即激活加入域名池
-   - **MX 未生效** → 进入待验证队列，后台每 30 秒自动重试，通过后自动激活
+- 查看共享域名池
+- 提交域名进入 MX 自动验证流程
+- 轮询域名状态
 
-### 方式二：管理员直接添加
+### 管理员侧
 
-登录管理后台 → 域名管理 → 手动添加（跳过 MX 检测，立即激活）。
+管理员还可以：
 
-### 所需 DNS 记录
-
-**已配置 `SMTP_HOSTNAME`（推荐）**——仅需 2 条记录：
-
-```
-MX   @   mail.yourdomain.com   优先级 10
-TXT  @   v=spf1 ip4:<服务器IP> ~all
-```
-
-> `mail.yourdomain.com` 为 `SMTP_HOSTNAME` 的值，A 记录由该主机名自身提供，用户域名无需额外 A 记录。
-
-**未配置 `SMTP_HOSTNAME`**——需 3 条记录：
-
-```
-MX   @              mail.example.com   优先级 10
-A    mail           <服务器公网 IP>
-TXT  @              v=spf1 ip4:<服务器公网 IP> ~all
-```
+- 手动添加域名
+- 强制导入域名
+- 更新单个域名 `hostname`
+- 通过 Cloudflare 自动创建 MX
+- 删除 Cloudflare MX 并删除本地域名
+- 批量启用 / 停用 / 删除域名
+- 按 `status` / `hostname` / 关键字筛选域名
 
 ---
 
 ## API 使用
 
-所有 API 请求需在 Header 携带：
+### 认证方式
 
+所有受保护 API 使用：
+
+```http
+Authorization: Bearer tm_xxxxxxxxxxxx
 ```
-X-API-Key: tm_xxxxxxxxxxxx
+
+也兼容：
+
+```text
+?api_key=tm_xxxxxxxxxxxx
 ```
 
 ### 常用接口
 
 ```bash
 BASE="http://<服务器IP>"
-KEY="your_api_key"
+KEY="tm_xxxxxxxxxxxx"
+```
 
-# 获取可用域名（无需登录）
-curl "$BASE/public/domains"
+公开接口：
 
-# 获取公开设置（无需登录）
+```bash
 curl "$BASE/public/settings"
-
-# 创建邮箱
-curl -X POST "$BASE/api/mailboxes" \
-  -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"address":"test","domain_id":"<domain-uuid>"}'
-
-# 列出邮箱
-curl "$BASE/api/mailboxes" -H "X-API-Key: $KEY"
-
-# 读取邮件
-curl "$BASE/api/mailboxes/<mailbox-id>/emails" -H "X-API-Key: $KEY"
-
-# 提交域名（任意登录用户）
-curl -X POST "$BASE/api/domains/submit" \
-  -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"example.com"}'
-
-# 查询域名验证状态
-curl "$BASE/api/domains/<domain-id>/status" -H "X-API-Key: $KEY"
-
-# 获取统计（无需登录）
 curl "$BASE/public/stats"
 ```
 
-### 速率限制响应头
+基础邮箱接口：
 
-每个响应会返回：
+```bash
+# 创建邮箱
+curl -s -X POST "$BASE/api/mailboxes" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"address":"test","domain":"example.com"}'
 
+# 列出邮箱
+curl -s "$BASE/api/mailboxes?page=1&size=20" \
+  -H "Authorization: Bearer $KEY"
+
+# 列出某邮箱邮件
+curl -s "$BASE/api/mailboxes/<mailbox-id>/emails?page=1&size=20" \
+  -H "Authorization: Bearer $KEY"
+
+# 读取单封邮件
+curl -s "$BASE/api/mailboxes/<mailbox-id>/emails/<email-id>" \
+  -H "Authorization: Bearer $KEY"
+
+# 提取最新一封邮件 OTP
+curl -s "$BASE/api/mailboxes/<mailbox-id>/otp/latest" \
+  -H "Authorization: Bearer $KEY"
+
+# 收藏 / 取消收藏邮箱
+curl -s -X PUT "$BASE/api/mailboxes/<mailbox-id>/favorite" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"favorite":true}'
 ```
-X-RateLimit-Limit: 500
-X-RateLimit-Remaining: 499
-X-RateLimit-Reset: 1735000000
+
+域名接口：
+
+```bash
+# 查看共享域名池（支持过滤）
+curl -s "$BASE/api/domains?status=active&hostname=mail.example.com&q=example" \
+  -H "Authorization: Bearer $KEY"
+
+# 普通用户提交域名验证
+curl -s -X POST "$BASE/api/domains/submit" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com"}'
+
+# 查询域名状态
+curl -s "$BASE/api/domains/<domain-id>/status" \
+  -H "Authorization: Bearer $KEY"
 ```
+
+管理员域名接口：
+
+```bash
+# 手动添加域名（可选 hostname）
+curl -s -X POST "$BASE/api/admin/domains" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","hostname":"mail.example.com"}'
+
+# 更新域名 hostname
+curl -s -X PUT "$BASE/api/admin/domains/<domain-id>/hostname" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"hostname":"mail.example.com"}'
+
+# MX 导入（可 force）
+curl -s -X POST "$BASE/api/admin/domains/mx-import" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","hostname":"mail.example.com","force":false}'
+
+# MX 自动注册
+curl -s -X POST "$BASE/api/admin/domains/mx-register" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","hostname":"mail.example.com"}'
+
+# Cloudflare 自动创建 MX
+curl -s -X POST "$BASE/api/admin/domains/cf-create" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"sub.example.com","hostname":"mail.example.com"}'
+
+# Cloudflare 删除 MX 并删除本地域名
+curl -s -X DELETE "$BASE/api/admin/domains/<domain-id>/cf" \
+  -H "Authorization: Bearer $KEY"
+
+# 批量启停
+curl -s -X PUT "$BASE/api/admin/domains/batch/toggle" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":[1,2,3],"active":true}'
+
+# 批量删除（可选联动删除 Cloudflare）
+curl -s -X PUT "$BASE/api/admin/domains/batch/delete" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":[1,2,3],"delete_cloudflare":true}'
+```
+
+---
+
+## 系统设置
+
+管理员后台支持以下重要设置：
+
+- `registration_open`
+- `smtp_server_ip`
+- `smtp_hostname`
+- `mailbox_ttl_minutes`
+- `catchall_enabled`
+- `catchall_account_id`
+- `cf_api_token`
+- `site_title`
+- `announcement`
+- `default_domain`
+- `max_mailboxes_per_user`
+
+说明：
+
+- `cf_api_token` 需要具备 Cloudflare `Zone:DNS:Edit` 权限
+- `smtp_server_ip` / `smtp_hostname` 的数据库设置优先于环境变量
 
 ---
 
 ## 数据库迁移
 
+当前迁移文件：
+
 | 文件 | 用途 |
 |------|------|
-| `sql/init.sql` | 全量初始化（新库使用）|
-| `sql/migrate_v2.sql` | v1 → v2：添加邮箱 `expires_at` 字段 |
-| `sql/migrate_v3.sql` | v2 → v3：域名 `status`、`mx_checked_at`，新增系统配置项（含 `smtp_hostname`）|
+| `sql/init.sql` | 新库全量初始化 |
+| `sql/migrate_v2.sql` | 添加 `mailboxes.expires_at` |
+| `sql/migrate_v3.sql` | 添加 `domains.status`、`domains.mx_checked_at` 和更多设置项 |
+| `sql/migrate_v4.sql` | 添加 `mailboxes.is_favorite`、catch-all 设置项 |
+| `sql/migrate_v5.sql` | 添加 `domains.hostname`、`cf_api_token` |
 
-对已运行的库执行迁移：
+当前 API 在启动时也会自动补齐缺失的兼容字段和设置项，所以旧库重启后端后通常能自愈升级；但如果你希望显式执行迁移，也可以手工跑：
 
 ```bash
 docker exec -i $(docker compose ps -q postgres) \
-  psql -U tempmail -d tempmail < sql/migrate_v3.sql
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < sql/migrate_v5.sql
 ```
 
 ---
 
 ## 项目结构
 
-```
+```text
 tempmail/
-├── api/                  # Go API 服务
-│   ├── main.go           # 路由、中间件、后台 goroutine
-│   ├── config/           # 环境变量配置
-│   ├── handler/          # HTTP 处理器
-│   ├── middleware/        # 鉴权、速率限制
-│   ├── model/            # 数据结构
-│   └── store/            # 数据库操作
-├── frontend/             # 静态 SPA（Nginx 托管）
-│   ├── index.html
+├── api/
+│   ├── cf/              # Cloudflare API 客户端
+│   ├── config/          # 环境变量配置
+│   ├── handler/         # HTTP 处理器
+│   ├── middleware/      # 鉴权、限流
+│   ├── model/           # 数据结构
+│   ├── otp/             # OTP 提取逻辑
+│   ├── store/           # PostgreSQL 访问层
+│   └── main.go
+├── frontend/
 │   ├── css/style.css
-│   └── js/app.js
-├── nginx/                # Nginx 反向代理配置
-├── postfix/              # Postfix 邮件接收
-├── pgbouncer/            # PgBouncer 连接池配置
-├── sql/                  # 数据库 DDL 与迁移脚本
-├── data/                 # 运行时数据（admin.key 在此，已 gitignore）
+│   ├── js/app.js
+│   └── index.html
+├── nginx/
+├── postfix/
+├── pgbouncer/
+├── sql/
 ├── docker-compose.yml
-└── .env                  # 敏感配置（已 gitignore，不含硬编码 IP）
+└── README.md
 ```
 
 ---
 
-## 后台 Goroutine
+## 后台任务
 
-| Goroutine | 间隔 | 功能 |
-|-----------|------|------|
-| 邮箱清理器 | 1 分钟 | 删除 `expires_at` 已过期的邮箱及其邮件 |
-| MX 域名验证器（待验证） | 30 秒 | 轮询 `status='pending'` 的域名，MX 检测通过则自动激活 |
-| MX 域名健康巡检（已激活） | 6 小时 | 重检所有 `status='active'` 的域名，MX 失效则自动禁用 |
-| Admin Key 写入 | 启动 1 秒后执行一次 | 将管理员 API Key 写入 `ADMIN_KEY_FILE` |
+| 任务 | 间隔 | 说明 |
+|------|------|------|
+| 邮箱清理器 | 1 分钟 | 删除过期且未收藏的邮箱 |
+| Pending 域名验证器 | 30 秒 | 激活 MX 已生效的待验证域名 |
+| Active 域名健康巡检 | 6 小时 | 重新检查已激活域名的 MX 健康 |
+| Admin Key 写入 | 启动后一次 | 把管理员 Key 写入 `data/admin.key` |
+
+---
+
+## 验证建议
+
+升级后建议优先验证：
+
+1. 登录后台，确认系统设置里可见 `catch-all` 和 `Cloudflare Token`
+2. 创建邮箱并测试三栏视图、收藏、前端取码
+3. 调用 `GET /api/mailboxes/:id/otp/latest`
+4. 添加带 `hostname` 的域名，检查 DNS 提示是否正确
+5. 测试域名筛选和批量操作
+6. 若已配置 `cf_api_token`，测试 `cf-create` 和 `:id/cf`
+7. 测试 catch-all 自动建箱是否仍正常
 
 ---
 

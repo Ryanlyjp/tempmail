@@ -28,6 +28,7 @@ CREATE INDEX idx_accounts_api_key ON accounts (api_key);
 CREATE TABLE domains (
     id            SERIAL PRIMARY KEY,
     domain        VARCHAR(255) NOT NULL UNIQUE,
+    hostname      VARCHAR(255) NOT NULL DEFAULT '',
     is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
     status        VARCHAR(16)  NOT NULL DEFAULT 'active',  -- active / pending / disabled
     mx_checked_at TIMESTAMPTZ,                             -- 最近一次 MX 检测时间
@@ -106,6 +107,7 @@ INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '') ON CONFLICT D
 INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('catchall_enabled', 'false') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('cf_api_token', '') ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- 7. 数据库性能参数（在 postgresql.conf 或 docker 环境变量中设置更佳）
