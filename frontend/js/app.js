@@ -100,10 +100,22 @@ const api = {
   getDomainStatus: id => apiFetch(API_BASE + '/domains/' + id + '/status'),
   // 邮箱 → 解包 {data:[...]}
   createMailbox:   (body) => apiFetch(API_BASE + '/mailboxes', { method: 'POST', body: JSON.stringify(body || {}) }).then(d => d.mailbox || d),
-  listMailboxes:   () => apiFetch(API_BASE + '/mailboxes').then(d => Array.isArray(d) ? d : (d.data || [])),
+  listMailboxesPage: (page = 1, size = 20) => apiFetch(API_BASE + '/mailboxes?page=' + page + '&size=' + size).then(d => ({
+    data: Array.isArray(d) ? d : (d.data || []),
+    total: d.total ?? (Array.isArray(d) ? d.length : 0),
+    page: d.page ?? page,
+    size: d.size ?? size,
+  })),
+  listMailboxes:   () => api.listMailboxesPage().then(d => d.data),
   deleteMailbox: id  => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
   // 邮件 → 解包 {data:[...]}
-  listEmails: mid    => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails').then(d => Array.isArray(d) ? d : (d.data || [])),
+  listEmailsPage: (mid, page = 1, size = 20) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails?page=' + page + '&size=' + size).then(d => ({
+    data: Array.isArray(d) ? d : (d.data || []),
+    total: d.total ?? (Array.isArray(d) ? d.length : 0),
+    page: d.page ?? page,
+    size: d.size ?? size,
+  })),
+  listEmails: mid    => api.listEmailsPage(mid).then(d => d.data),
   getEmail:   (mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid).then(d => d.email || d),
   deleteEmail:(mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid, { method: 'DELETE' }),
   // 管理
@@ -440,7 +452,9 @@ async function renderPage(page) {
 const PAGE_SIZE = 20;
 const dashState = {
   mailboxes: [],
+  mailboxTotal: 0,
   emails: [],
+  emailTotal: 0,
   selectedMailbox: null, // {id, full_address, is_favorite, expires_at, ...}
   selectedEmailId: null,
   mailboxPage: 1,
@@ -448,15 +462,32 @@ const dashState = {
   emailListPoller: null,
 };
 
+function applyMailboxPage(resp) {
+  const rows = resp?.data || [];
+  const prevSelectedID = dashState.selectedMailbox?.id || null;
+  dashState.mailboxes = rows;
+  dashState.mailboxTotal = resp?.total ?? rows.length;
+  state.mailboxes = rows;
+
+  const found = prevSelectedID ? rows.find(m => m.id === prevSelectedID) : null;
+  dashState.selectedMailbox = found || rows[0] || null;
+  if (dashState.selectedMailbox?.id !== prevSelectedID) {
+    dashState.selectedEmailId = null;
+    dashState.emails = [];
+    dashState.emailTotal = 0;
+    dashState.emailPage = 1;
+  }
+}
+
 async function renderDashboard(container) {
   const isAdmin = state.account?.is_admin;
-  const [mailboxes, domains, statsData] = await Promise.all([
-    api.listMailboxes(),
+  const [mailboxesResp, domains, statsData, publicSettings] = await Promise.all([
+    api.listMailboxesPage(dashState.mailboxPage, PAGE_SIZE),
     api.domains(),
     api.stats().catch(() => null),
+    api.publicSettings().catch(() => ({})),
   ]);
-  dashState.mailboxes = mailboxes || [];
-  state.mailboxes = dashState.mailboxes;
+  applyMailboxPage(mailboxesResp);
 
   // 顶栏按钮
   const actions = $('topbar-actions');
@@ -472,11 +503,11 @@ async function renderDashboard(container) {
   const pendingDomains = (domains||[]).filter(d => d.status === 'pending').length;
 
   // 公告栏
-  const announcement = (await api.publicSettings().catch(() => ({}))).announcement || '';
+  const announcement = publicSettings.announcement || '';
 
   // 顶部窄统计条（替代原 4-6 张大卡片）
   const stripItems = [
-    { label: '我的邮箱', value: dashState.mailboxes.length },
+    { label: '我的邮箱', value: dashState.mailboxTotal },
     { label: '可用域名', value: activeDomains },
     { label: '邮件总数', value: st.total_emails ?? '—' },
     { label: '邮箱总量', value: st.total_mailboxes ?? '—' },
@@ -485,16 +516,6 @@ async function renderDashboard(container) {
       { label: '待验证', value: st.pending_domains ?? pendingDomains },
     ] : []),
   ];
-
-  // 选中邮箱：默认选第一个收藏的或第一个；否则空
-  if (dashState.selectedMailbox) {
-    // 刷新一下选中邮箱的数据（is_favorite/expires_at 可能变了）
-    const found = dashState.mailboxes.find(m => m.id === dashState.selectedMailbox.id);
-    dashState.selectedMailbox = found || null;
-  }
-  if (!dashState.selectedMailbox && dashState.mailboxes.length > 0) {
-    dashState.selectedMailbox = dashState.mailboxes[0];
-  }
 
   container.innerHTML = `
     ${announcement ? `<div class="dashboard-announce">📢 ${escHtml(announcement)}</div>` : ''}
@@ -524,11 +545,10 @@ async function renderDashboard(container) {
 function paneRenderMailboxes() {
   const pane = $('pane-mailboxes');
   if (!pane) return;
-  const total = dashState.mailboxes.length;
+  const total = dashState.mailboxTotal;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   if (dashState.mailboxPage > totalPages) dashState.mailboxPage = totalPages;
-  const start = (dashState.mailboxPage - 1) * PAGE_SIZE;
-  const rows = dashState.mailboxes.slice(start, start + PAGE_SIZE);
+  const rows = dashState.mailboxes;
 
   pane.innerHTML = `
     <div class="pane-header">
@@ -588,6 +608,7 @@ window.dashSelectMailbox = function(id) {
   dashState.selectedMailbox = mb;
   dashState.selectedEmailId = null;
   dashState.emails = [];
+  dashState.emailTotal = 0;
   dashState.emailPage = 1;
   paneRenderMailboxes();
   paneRenderEmails();
@@ -616,20 +637,25 @@ async function paneRenderEmails() {
     <div class="pane-scroll" id="pane-emails-scroll"><div style="padding:1rem;text-align:center"><span class="spinner"></span></div></div>
   `;
 
-  let emails;
+  let emailsResp;
   try {
-    emails = await api.listEmails(mb.id);
+    emailsResp = await api.listEmailsPage(mb.id, dashState.emailPage, PAGE_SIZE);
   } catch (e) {
     $('pane-emails-scroll').innerHTML = `<div style="padding:1rem;color:var(--clr-danger)">加载失败：${escHtml(e.message)}</div>`;
     return;
   }
-  dashState.emails = emails || [];
+  if (dashState.selectedMailbox?.id !== mb.id) return;
+  dashState.emails = emailsResp?.data || [];
+  dashState.emailTotal = emailsResp?.total ?? dashState.emails.length;
 
-  const total = dashState.emails.length;
+  const total = dashState.emailTotal;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  if (dashState.emailPage > totalPages) dashState.emailPage = totalPages;
-  const start = (dashState.emailPage - 1) * PAGE_SIZE;
-  const rows = dashState.emails.slice(start, start + PAGE_SIZE);
+  if (dashState.emailPage > totalPages) {
+    dashState.emailPage = totalPages;
+    paneRenderEmails();
+    return;
+  }
+  const rows = dashState.emails;
 
   const scroll = $('pane-emails-scroll');
   if (!scroll) return;
@@ -736,13 +762,18 @@ window.dashDeleteEmail = async function(mid, eid) {
   } catch (err) { toast('删除失败：' + err.message, 'error'); }
 };
 
-window.dashChangePage = function(kind, delta) {
+window.dashChangePage = async function(kind, delta) {
   if (kind === 'mailbox') {
     dashState.mailboxPage = Math.max(1, dashState.mailboxPage + delta);
+    const resp = await api.listMailboxesPage(dashState.mailboxPage, PAGE_SIZE);
+    applyMailboxPage(resp);
     paneRenderMailboxes();
+    paneRenderEmailView();
+    startEmailListPoller();
+    await paneRenderEmails();
   } else if (kind === 'email') {
     dashState.emailPage = Math.max(1, dashState.emailPage + delta);
-    paneRenderEmails();
+    await paneRenderEmails();
   }
 };
 
@@ -766,20 +797,25 @@ function startEmailListPoller() {
       return;
     }
     try {
-      const fresh = await api.listEmails(dashState.selectedMailbox.id);
-      if (!fresh) return;
-      const old = dashState.emails || [];
-      if (fresh.length !== old.length || fresh[0]?.id !== old[0]?.id) {
-        dashState.emails = fresh;
-        // 仅重渲中栏（不打扰右栏正文）
-        const totalPages = Math.max(1, Math.ceil(fresh.length / PAGE_SIZE));
-        if (dashState.emailPage > totalPages) dashState.emailPage = totalPages;
-        const start = (dashState.emailPage - 1) * PAGE_SIZE;
-        const rows = fresh.slice(start, start + PAGE_SIZE);
+      const fresh = await api.listEmailsPage(dashState.selectedMailbox.id, dashState.emailPage, PAGE_SIZE);
+      const freshRows = fresh?.data || [];
+      const oldRows = dashState.emails || [];
+      const totalChanged = (fresh?.total ?? freshRows.length) !== dashState.emailTotal;
+      const firstChanged = freshRows[0]?.id !== oldRows[0]?.id;
+      if (totalChanged || firstChanged) {
+        dashState.emails = freshRows;
+        dashState.emailTotal = fresh?.total ?? freshRows.length;
         const scroll = $('pane-emails-scroll');
+        const pane = $('pane-emails');
         if (scroll) {
-          scroll.innerHTML = rows.map(e => buildEmailItem(dashState.selectedMailbox.id, e, dashState.selectedEmailId === e.id)).join('') ||
+          scroll.innerHTML = freshRows.map(e => buildEmailItem(dashState.selectedMailbox.id, e, dashState.selectedEmailId === e.id)).join('') ||
             `<div class="empty-state"><span class="empty-icon">📭</span><p>暂无邮件</p></div>`;
+        }
+        if (pane) {
+          const totalPages = Math.max(1, Math.ceil(dashState.emailTotal / PAGE_SIZE));
+          const oldPager = pane.querySelector('.pane-pager');
+          if (oldPager) oldPager.remove();
+          if (totalPages > 1) pane.insertAdjacentHTML('beforeend', buildPager('email', dashState.emailPage, totalPages));
         }
       }
     } catch (_) { /* 静默 */ }
@@ -1608,6 +1644,8 @@ async function renderAdminSettings(container) {
   const siteTitle  = settings.site_title            || 'TempMail';
   const defDomain  = settings.default_domain        || '';
   const ttlMins    = settings.mailbox_ttl_minutes   || '30';
+  const catchallEnabled = settings.catchall_enabled === 'true' || settings.catchall_enabled === true;
+  const catchallAccountId = settings.catchall_account_id || '';
   const announce   = settings.announcement          || '';
   const maxMb      = settings.max_mailboxes_per_user|| '5';
 
@@ -1673,6 +1711,20 @@ async function renderAdminSettings(container) {
         ${inputRow('input-mailbox-ttl-minutes', '邮箱有效期（分钟）', ttlMins, '新建邮箱的默认存活时间，0 = 永不过期', '30')}
         <div class="divider"></div>
 
+        <!-- Catch-all -->
+        <div class="toggle-wrap" style="margin-bottom:0.5rem">
+          <label class="toggle">
+            <input type="checkbox" id="toggle-catchall" ${catchallEnabled ? 'checked' : ''} onchange="saveCatchAllSetting(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+          <div>
+            <div class="toggle-label">开启 Catch-all 自动建箱</div>
+            <span class="toggle-desc">收到未知地址邮件时自动创建邮箱并落到指定账号名下</span>
+          </div>
+        </div>
+        ${inputRow('input-catchall-account-id', 'Catch-all 归属账号 ID', catchallAccountId, '留空则自动归属首个管理员账号', '留空使用首个管理员')}
+        <div class="divider"></div>
+
         <!-- 每用户邮箱上限 -->
         ${inputRow('input-max-mailboxes-per-user', '每账户邮箱上限', maxMb, '每个账户同时存在的邮箱数量上限', '5')}
         <div class="divider"></div>
@@ -1724,6 +1776,17 @@ window.saveRegistrationSetting = async function(enabled) {
   } catch(e) {
     toast('保存失败: ' + e.message, 'error');
     const cb = $('toggle-reg');
+    if (cb) cb.checked = !enabled;
+  }
+};
+
+window.saveCatchAllSetting = async function(enabled) {
+  try {
+    await api.admin.saveSettings({ catchall_enabled: enabled ? 'true' : 'false' });
+    toast(`Catch-all 已${enabled ? '开启' : '关闭'}`, 'success');
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'error');
+    const cb = $('toggle-catchall');
     if (cb) cb.checked = !enabled;
   }
 };

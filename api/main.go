@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -39,7 +41,7 @@ func main() {
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
 		DB:           0,
-		PoolSize:     0,      // 0 = 不限（自动按 CPU 核心数 * 10）
+		PoolSize:     0, // 0 = 不限（自动按 CPU 核心数 * 10）
 		MinIdleConns: 20,
 		DialTimeout:  3 * time.Second,
 		ReadTimeout:  2 * time.Second,
@@ -58,11 +60,11 @@ func main() {
 
 	// CORS：允许前端跨域访问
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		ExposeHeaders:    []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"},
-		MaxAge:           12 * time.Hour,
+		AllowOrigins:  []string{"*"},
+		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:  []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders: []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"},
+		MaxAge:        12 * time.Hour,
 	}))
 
 	// 健康检查（无需认证）
@@ -72,12 +74,12 @@ func main() {
 
 	// 初始化 handlers
 	accountH := handler.NewAccountHandler(db)
-	domainH  := handler.NewDomainHandler(db, cfg.SMTPServerIP, cfg.SMTPHostname)
+	domainH := handler.NewDomainHandler(db, cfg.SMTPServerIP, cfg.SMTPHostname)
 	mailboxH := handler.NewMailboxHandler(db)
-	emailH   := handler.NewEmailHandler(db)
+	emailH := handler.NewEmailHandler(db)
 	settingH := handler.NewSettingHandler(db)
 	registerH := handler.NewRegisterHandler(db)
-	statsH   := handler.NewStatsHandler(db)
+	statsH := handler.NewStatsHandler(db)
 
 	// 公开路由（无需认证）
 	public := r.Group("/public")
@@ -109,9 +111,9 @@ func main() {
 		api.PUT("/mailboxes/:id/favorite", mailboxH.Favorite)
 
 		// 邮件管理
-                api.GET("/mailboxes/:id/emails", emailH.List)
-                api.GET("/mailboxes/:id/emails/:email_id", emailH.Get)
-                api.DELETE("/mailboxes/:id/emails/:email_id", emailH.Delete)
+		api.GET("/mailboxes/:id/emails", emailH.List)
+		api.GET("/mailboxes/:id/emails/:email_id", emailH.Get)
+		api.DELETE("/mailboxes/:id/emails/:email_id", emailH.Delete)
 		// 管理员路由
 		admin := api.Group("/admin")
 		admin.Use(middleware.AdminOnly())
@@ -166,6 +168,12 @@ func main() {
 			// 查找收件邮箱
 			mailbox, err := db.GetMailboxByFullAddress(ctx, recipient)
 			if err != nil {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					log.Printf("[deliver] lookup mailbox error for %s: %v", recipient, err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "mailbox lookup failed"})
+					return
+				}
+
 				// 未知收件人 → 检查 catch-all 是否启用
 				enabled, _ := db.GetSetting(ctx, "catchall_enabled")
 				if enabled != "true" {

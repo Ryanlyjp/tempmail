@@ -28,9 +28,9 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 
-// 连接池：不限并发，由 PgBouncer 统一管控实际 PG 连接数
-        cfg.MaxConns = 500
-        cfg.MinConns = 20
+	// 连接池：不限并发，由 PgBouncer 统一管控实际 PG 连接数
+	cfg.MaxConns = 500
+	cfg.MinConns = 20
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
@@ -50,11 +50,62 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
 
-	return &Store{pool: pool}, nil
+	s := &Store{pool: pool}
+	if err := s.ensureSchemaCompat(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return s, nil
 }
 
 func (s *Store) Close() {
 	s.pool.Close()
+}
+
+func (s *Store) ensureSchemaCompat(ctx context.Context) error {
+	stmts := []string{
+		`ALTER TABLE mailboxes
+			ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 minutes'`,
+		`CREATE INDEX IF NOT EXISTS idx_mailboxes_expires_at ON mailboxes (expires_at)`,
+		`ALTER TABLE domains
+			ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'active'`,
+		`UPDATE domains
+			SET status = CASE WHEN is_active THEN 'active' ELSE 'disabled' END
+			WHERE status <> 'pending'`,
+		`ALTER TABLE domains
+			ADD COLUMN IF NOT EXISTS mx_checked_at TIMESTAMPTZ`,
+		`CREATE INDEX IF NOT EXISTS idx_domains_status
+			ON domains (status) WHERE status = 'pending'`,
+		`ALTER TABLE mailboxes
+			ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN NOT NULL DEFAULT FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_mailboxes_favorite
+			ON mailboxes (is_favorite) WHERE is_favorite = TRUE`,
+		`INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('site_title', 'TempMail')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('default_domain', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('announcement', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('max_mailboxes_per_user', '100')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('catchall_enabled', 'false')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '')
+			ON CONFLICT (key) DO NOTHING`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure schema compatibility: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ==================== Account ====================
