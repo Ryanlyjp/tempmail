@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制配置
-COPY postfix/main.cf /etc/postfix/main.cf
-COPY postfix/master.cf /etc/postfix/master.cf
-COPY postfix/mail-receiver.py /usr/local/bin/mail-receiver
-COPY postfix/entrypoint.sh /entrypoint.sh
+COPY main.cf /etc/postfix/main.cf
+COPY master.cf /etc/postfix/master.cf
+COPY mail-receiver.py /usr/local/bin/mail-receiver
+COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /usr/local/bin/mail-receiver /entrypoint.sh
 
