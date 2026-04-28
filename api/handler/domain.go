@@ -424,6 +424,25 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 		}
 	}
 
+	spfValue := fmt.Sprintf("v=spf1 ip4:%s ~all", h.getServerIP(c.Request.Context()))
+	txtFQDN := zone.Name
+	txtRecordName := zone.Name
+	if subdomain != "" {
+		txtFQDN = req.Domain
+		txtRecordName = subdomain
+	}
+	txtRecord, err := client.FindDNSRecord(zone.ID, "TXT", txtFQDN, spfValue)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "查询 Cloudflare SPF TXT 记录失败: " + err.Error(), "zone": zone.Name, "txt_name": txtFQDN})
+		return
+	}
+	if txtRecord == nil {
+		if _, err := client.CreateTXTRecord(zone.ID, txtRecordName, spfValue); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "创建 Cloudflare SPF TXT 记录失败: " + err.Error(), "zone": zone.Name, "txt_name": txtFQDN, "txt_value": spfValue})
+			return
+		}
+	}
+
 	var domain *model.Domain
 	if skippedCF {
 		domain, err = h.store.AddDomain(c.Request.Context(), req.Domain, req.Hostname)
@@ -557,12 +576,31 @@ func (h *DomainHandler) deleteDomainWithCloudflare(ctx context.Context, id int) 
 		return nil, false, zone.Name, fmt.Errorf("查找 MX 记录失败: %w", err)
 	}
 
+	spfValue := fmt.Sprintf("v=spf1 ip4:%s ~all", h.getServerIP(ctx))
+	txtFQDN := zone.Name
+	if subdomain != "" {
+		txtFQDN = domain.Domain
+	}
+	txtRecord, err := client.FindDNSRecord(zone.ID, "TXT", txtFQDN, "")
+	if err != nil {
+		return nil, false, zone.Name, fmt.Errorf("查找 TXT 记录失败: %w", err)
+	}
+
 	deletedCF := false
 	if record != nil {
 		if err := client.DeleteDNSRecord(zone.ID, record.ID); err != nil {
-			return nil, false, zone.Name, fmt.Errorf("删除 Cloudflare DNS 记录失败: %w", err)
+			return nil, false, zone.Name, fmt.Errorf("删除 Cloudflare MX 记录失败: %w", err)
 		}
 		deletedCF = true
+	}
+	if txtRecord != nil {
+		content := strings.Trim(txtRecord.Content, "\"")
+		if content == spfValue {
+			if err := client.DeleteDNSRecord(zone.ID, txtRecord.ID); err != nil {
+				return nil, deletedCF, zone.Name, fmt.Errorf("删除 Cloudflare TXT 记录失败: %w", err)
+			}
+			deletedCF = true
+		}
 	}
 
 	if err := h.store.DeleteDomain(ctx, id); err != nil {

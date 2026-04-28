@@ -1436,6 +1436,35 @@ async function renderAdminDomains(container) {
         </div>
       </div>
 
+      <div class="card" style="border:1px solid rgba(99,102,241,.28);box-shadow:0 10px 28px rgba(99,102,241,.08)">
+        <div class="card-header">
+          <div class="card-title">☁ Cloudflare / 批量操作</div>
+          <div style="font-size:0.82rem;color:var(--text-muted)">这里集中放显眼入口，避免只在表格里找不到。</div>
+        </div>
+        <div class="card-body" style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:center">
+          <button class="btn btn-success btn-sm" onclick="showMXRegisterModal()">⚡ MX 自动注册</button>
+          <button class="btn btn-primary btn-sm" onclick="showCFCreateModal()">☁ Cloudflare 创建 MX</button>
+          <button class="btn btn-ghost btn-sm" onclick="showAddDomainModal()">+ 手动添加域名</button>
+          <span style="font-size:0.78rem;color:var(--text-muted)">单个域名的 CF 删除在下方每行操作里；批量删除并删 CF 在“批量操作区”。</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">批量操作区</div>
+          <div style="font-size:0.82rem;color:var(--text-muted)">先勾选域名，再使用这里的批量启用 / 停用 / 删除入口。</div>
+        </div>
+        <div class="card-body" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(true)">全选当前结果</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(false)">清空选择</button>
+          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(true)">批量启用</button>
+          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(false)">批量停用</button>
+          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(false)">批量删除本地</button>
+          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(true)">批量删除并删 CF</button>
+          <span style="font-size:0.78rem;color:var(--text-muted)">已选 ${selectedIds.length} 个，当前结果 ${filtered.length} 个</span>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-body" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0.8rem;align-items:end">
           <div class="form-group" style="margin:0">
@@ -1458,18 +1487,6 @@ async function renderAdminDomains(container) {
               ${hostnameOptions.map(h => `<option value="${escHtml(h)}" ${hostnameFilter === h ? 'selected' : ''}>${escHtml(h)}</option>`).join('')}
             </select>
           </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-body" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(true)">全选当前结果</button>
-          <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(false)">清空选择</button>
-          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(true)">批量启用</button>
-          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(false)">批量停用</button>
-          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(false)">批量删除本地</button>
-          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(true)">批量删除并删 CF</button>
-          <span style="font-size:0.78rem;color:var(--text-muted)">已选 ${selectedIds.length} 个，当前结果 ${filtered.length} 个</span>
         </div>
       </div>
 

@@ -95,15 +95,8 @@ func (c *Client) FindZoneByName(zoneName string) (*Zone, error) {
 	return &data.Result[0], nil
 }
 
-func (c *Client) FindMXRecord(zoneID, subdomain, zoneName, target string) (*DNSRecord, error) {
-	fqdn := subdomain
-	if fqdn == "" {
-		fqdn = zoneName
-	} else {
-		fqdn = subdomain + "." + zoneName
-	}
-
-	req, _ := http.NewRequest("GET", baseURL+"/zones/"+zoneID+"/dns_records?type=MX&name="+url.QueryEscape(fqdn), nil)
+func (c *Client) FindDNSRecord(zoneID, recordType, fqdn, target string) (*DNSRecord, error) {
+	req, _ := http.NewRequest("GET", baseURL+"/zones/"+zoneID+"/dns_records?type="+url.QueryEscape(recordType)+"&name="+url.QueryEscape(fqdn), nil)
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 
 	resp, err := c.HTTP.Do(req)
@@ -120,11 +113,21 @@ func (c *Client) FindMXRecord(zoneID, subdomain, zoneName, target string) (*DNSR
 		return nil, fmt.Errorf("CF API error: %s", firstError(data.Errors))
 	}
 	for _, record := range data.Result {
-		if record.Content == target {
+		if target == "" || record.Content == target {
 			return &record, nil
 		}
 	}
 	return nil, nil
+}
+
+func (c *Client) FindMXRecord(zoneID, subdomain, zoneName, target string) (*DNSRecord, error) {
+	fqdn := subdomain
+	if fqdn == "" {
+		fqdn = zoneName
+	} else {
+		fqdn = subdomain + "." + zoneName
+	}
+	return c.FindDNSRecord(zoneID, "MX", fqdn, target)
 }
 
 func (c *Client) CreateMXRecord(zoneID, subdomain, target string) (*DNSRecord, error) {
@@ -135,6 +138,41 @@ func (c *Client) CreateMXRecord(zoneID, subdomain, target string) (*DNSRecord, e
 		Priority: 10,
 		Proxied:  false,
 		TTL:      1,
+	}
+	payload, _ := json.Marshal(record)
+
+	req, _ := http.NewRequest("POST", baseURL+"/zones/"+zoneID+"/dns_records", strings.NewReader(string(payload)))
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("CF API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data responseWithRecord
+	if err := decodeBody(resp.Body, &data); err != nil {
+		return nil, err
+	}
+	if !data.Success {
+		return nil, fmt.Errorf("CF API error: %s", firstError(data.Errors))
+	}
+	return &data.Result, nil
+}
+
+
+func (c *Client) CreateTXTRecord(zoneID, name, content string) (*DNSRecord, error) {
+	txtContent := content
+	if !strings.HasPrefix(txtContent, "\"") {
+		txtContent = "\"" + txtContent + "\""
+	}
+	record := DNSRecord{
+		Type:    "TXT",
+		Name:    name,
+		Content: txtContent,
+		Proxied: false,
+		TTL:     1,
 	}
 	payload, _ := json.Marshal(record)
 
