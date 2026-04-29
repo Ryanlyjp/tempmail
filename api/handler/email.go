@@ -117,8 +117,11 @@ func (h *EmailHandler) LatestOTP(c *gin.Context) {
 		return
 	}
 
-	text := strings.Join([]string{email.BodyText, otp.StripHTML(email.BodyHTML), email.Subject}, "\n")
-	code := otp.Extract(text)
+	code := otp.ExtractFromHTML(email.BodyHTML)
+	if code == "" {
+		text := strings.Join([]string{email.BodyText, otp.StripHTML(email.BodyHTML), email.Subject}, "\n")
+		code = otp.Extract(text)
+	}
 	if code == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "otp not found in latest email"})
 		return
