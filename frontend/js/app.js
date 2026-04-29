@@ -34,6 +34,17 @@ const el = (tag, cls, html) => {
   if (html !== undefined) e.innerHTML = html;
   return e;
 };
+const DASH_MOBILE_BREAKPOINT = 768;
+const DASH_MOBILE_VIEWS = new Set(['mailboxes', 'emails', 'detail']);
+
+function isMobileLayout() {
+  return window.matchMedia(`(max-width: ${DASH_MOBILE_BREAKPOINT}px)`).matches;
+}
+
+function buildDataLabel(label, content, attrs = '') {
+  const suffix = attrs ? ' ' + attrs : '';
+  return `<td data-label="${escHtml(label)}"${suffix}>${content}</td>`;
+}
 
 function toast(msg, type = 'info') {
   const icons = { success: '✓', error: '✗', warn: '⚠', info: 'ℹ' };
@@ -470,7 +481,36 @@ const dashState = {
   selectedEmailId: null,
   mailboxPage: 1,
   emailPage: 1,
+  mobileView: 'mailboxes',
   emailListPoller: null,
+};
+
+function setMobileView(view) {
+  if (!DASH_MOBILE_VIEWS.has(view)) return;
+  dashState.mobileView = view;
+  const grid = document.querySelector('.three-pane-grid');
+  if (grid) grid.dataset.mobileView = view;
+}
+
+function normalizeDashboardMobileView() {
+  let nextView = dashState.mobileView;
+  if (!dashState.selectedMailbox) nextView = 'mailboxes';
+  else if (!dashState.selectedEmailId && nextView === 'detail') nextView = 'emails';
+  if (!DASH_MOBILE_VIEWS.has(nextView)) nextView = 'mailboxes';
+  setMobileView(nextView);
+}
+
+function buildPaneBackButton(targetView, label) {
+  return `
+    <button class="pane-back-btn" type="button" onclick="dashSetMobileView('${targetView}')" aria-label="${escHtml(label)}">
+      <span aria-hidden="true">←</span>
+      <span>${escHtml(label)}</span>
+    </button>
+  `;
+}
+
+window.dashSetMobileView = function(view) {
+  setMobileView(view);
 };
 
 function applyMailboxPage(resp) {
@@ -488,6 +528,7 @@ function applyMailboxPage(resp) {
     dashState.emailTotal = 0;
     dashState.emailPage = 1;
   }
+  normalizeDashboardMobileView();
 }
 
 async function renderDashboard(container) {
@@ -540,7 +581,7 @@ async function renderDashboard(container) {
       ${pendingDomains > 0 ? `<div class="strip-item strip-warn">🔄 ${pendingDomains} 域名验证中</div>` : ''}
     </div>
 
-    <div class="three-pane-grid">
+    <div class="three-pane-grid" data-mobile-view="${dashState.mobileView}">
       <div class="pane pane-mailboxes" id="pane-mailboxes"></div>
       <div class="pane pane-emails" id="pane-emails"></div>
       <div class="pane pane-email-view" id="pane-email-view"></div>
@@ -563,8 +604,12 @@ function paneRenderMailboxes() {
 
   pane.innerHTML = `
     <div class="pane-header">
-      <span class="pane-title">📬 我的邮箱 (${total})</span>
-      <button class="btn btn-primary btn-sm" onclick="createMailbox()">+ 新建</button>
+      <div class="pane-header-main">
+        <span class="pane-title">📬 我的邮箱 (${total})</span>
+      </div>
+      <div class="pane-header-actions">
+        <button class="btn btn-primary btn-sm" onclick="createMailbox()">+ 新建</button>
+      </div>
     </div>
     <div class="pane-scroll">
       ${total === 0
@@ -621,6 +666,8 @@ window.dashSelectMailbox = function(id) {
   dashState.emails = [];
   dashState.emailTotal = 0;
   dashState.emailPage = 1;
+  if (isMobileLayout()) setMobileView('emails');
+  else normalizeDashboardMobileView();
   paneRenderMailboxes();
   paneRenderEmails();
   paneRenderEmailView();
@@ -632,18 +679,26 @@ async function paneRenderEmails() {
   if (!pane) return;
   const mb = dashState.selectedMailbox;
   if (!mb) {
-    pane.innerHTML = `<div class="pane-header"><span class="pane-title">邮件</span></div>
+    pane.innerHTML = `<div class="pane-header">
+      <div class="pane-header-main">
+        ${buildPaneBackButton('mailboxes', '返回邮箱')}
+        <span class="pane-title">邮件</span>
+      </div>
+    </div>
       <div class="pane-scroll"><div class="empty-state"><span class="empty-icon">←</span><p>请先在左栏选择一个邮箱</p></div></div>`;
     return;
   }
 
   pane.innerHTML = `
     <div class="pane-header">
-      <span class="pane-title" title="${escHtml(mb.full_address)}">${escHtml(mb.full_address)}</span>
-      <span>
+      <div class="pane-header-main">
+        ${buildPaneBackButton('mailboxes', '返回邮箱')}
+        <span class="pane-title" title="${escHtml(mb.full_address)}">${escHtml(mb.full_address)}</span>
+      </div>
+      <div class="pane-header-actions">
         <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mb.full_address)}')" title="复制地址">⎘</button>
         <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
-      </span>
+      </div>
     </div>
     <div class="pane-scroll" id="pane-emails-scroll"><div style="padding:1rem;text-align:center"><span class="spinner"></span></div></div>
   `;
@@ -684,6 +739,8 @@ async function paneRenderEmails() {
 
 window.dashSelectEmail = function(mid, eid) {
   dashState.selectedEmailId = eid;
+  if (isMobileLayout()) setMobileView('detail');
+  else normalizeDashboardMobileView();
   // 仅刷新右栏 + 中栏的高亮
   paneRenderEmailView();
   // 仅更新中栏列表的选中样式（不重拉数据）
@@ -701,11 +758,21 @@ async function paneRenderEmailView() {
   const mb = dashState.selectedMailbox;
   const eid = dashState.selectedEmailId;
   if (!mb || !eid) {
-    pane.innerHTML = `<div class="pane-header"><span class="pane-title">邮件正文</span></div>
+    pane.innerHTML = `<div class="pane-header">
+      <div class="pane-header-main">
+        ${buildPaneBackButton(mb ? 'emails' : 'mailboxes', mb ? '返回邮件' : '返回邮箱')}
+        <span class="pane-title">邮件正文</span>
+      </div>
+    </div>
       <div class="pane-scroll"><div class="empty-state"><span class="empty-icon">📨</span><p>请在中栏选择一封邮件</p></div></div>`;
     return;
   }
-  pane.innerHTML = `<div class="pane-header"><span class="pane-title">邮件正文</span></div>
+  pane.innerHTML = `<div class="pane-header">
+    <div class="pane-header-main">
+      ${buildPaneBackButton('emails', '返回邮件')}
+      <span class="pane-title">邮件正文</span>
+    </div>
+  </div>
     <div class="pane-scroll" id="pane-email-view-scroll"><div style="padding:1rem;text-align:center"><span class="spinner"></span></div></div>`;
 
   let e;
@@ -724,11 +791,14 @@ async function paneRenderEmailView() {
 
   // 顶部 header 改为带操作按钮
   pane.querySelector('.pane-header').innerHTML = `
-    <span class="pane-title" title="${escHtml(subject)}">${escHtml(subject)}</span>
-    <span>
+    <div class="pane-header-main">
+      ${buildPaneBackButton('emails', '返回邮件')}
+      <span class="pane-title" title="${escHtml(subject)}">${escHtml(subject)}</span>
+    </div>
+    <div class="pane-header-actions">
       <button class="btn btn-ghost btn-sm" onclick="dashExtractCodeFromEmail('${mb.id}','${eid}')" title="从该邮件提取验证码">🔢 取码</button>
       <button class="btn btn-danger btn-sm" onclick="dashDeleteEmail('${mb.id}','${eid}')" title="删除该邮件">✕</button>
-    </span>
+    </div>
   `;
 
   const scroll = $('pane-email-view-scroll');
@@ -767,7 +837,11 @@ window.dashDeleteEmail = async function(mid, eid) {
   try {
     await api.deleteEmail(mid, eid);
     toast('邮件已删除', 'success');
-    if (dashState.selectedEmailId === eid) dashState.selectedEmailId = null;
+    if (dashState.selectedEmailId === eid) {
+      dashState.selectedEmailId = null;
+      if (isMobileLayout()) setMobileView('emails');
+    }
+    normalizeDashboardMobileView();
     paneRenderEmails();
     paneRenderEmailView();
   } catch (err) { toast('删除失败：' + err.message, 'error'); }
@@ -816,6 +890,11 @@ function startEmailListPoller() {
       if (totalChanged || firstChanged) {
         dashState.emails = freshRows;
         dashState.emailTotal = fresh?.total ?? freshRows.length;
+        if (dashState.selectedEmailId && !freshRows.some(e => e.id === dashState.selectedEmailId)) {
+          dashState.selectedEmailId = null;
+          normalizeDashboardMobileView();
+          paneRenderEmailView();
+        }
         const scroll = $('pane-emails-scroll');
         const pane = $('pane-emails');
         if (scroll) {
@@ -839,6 +918,22 @@ function stopEmailListPoller() {
     dashState.emailListPoller = null;
   }
 }
+
+let _dashboardResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_dashboardResizeTimer);
+  _dashboardResizeTimer = setTimeout(() => {
+    if (!isMobileLayout() && dashState.mobileView !== 'mailboxes') {
+      setMobileView('mailboxes');
+    }
+    if (!window.matchMedia('(max-width: 1024px)').matches) {
+      closeSidebar();
+    }
+    if (state.page === 'dashboard') {
+      normalizeDashboardMobileView();
+    }
+  }, 120);
+});
 
 // ─── 收藏 / 取消收藏 ─────────────────────────────────────────
 window.toggleFavorite = async function(id, fav) {
@@ -1232,14 +1327,14 @@ async function renderDomainsGuide(container) {
         <div style="font-size:0.78rem;color:var(--text-muted)">后台每 30 秒自动检测，验证通过后自动激活</div>
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="stack-table">
           <thead><tr><th>域名</th><th>上次检测</th><th>状态</th></tr></thead>
           <tbody>
             ${pending.map(d => `
               <tr id="pending-row-${d.id}">
-                <td style="font-family:var(--font-mono);font-size:0.82rem">${escHtml(d.domain)}</td>
-                <td style="font-size:0.78rem">${d.mx_checked_at ? timeAgo(d.mx_checked_at) : '待首次检测'}</td>
-                <td><span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span></td>
+                ${buildDataLabel('域名', `<span style="font-family:var(--font-mono);font-size:0.82rem">${escHtml(d.domain)}</span>`)}
+                ${buildDataLabel('上次检测', d.mx_checked_at ? timeAgo(d.mx_checked_at) : '待首次检测', 'style="font-size:0.78rem"')}
+                ${buildDataLabel('状态', `<span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span>`)}
               </tr>
             `).join('')}
           </tbody>
@@ -1255,17 +1350,17 @@ async function renderDomainsGuide(container) {
         <div class="card">
           <div class="card-header"><div class="card-title">◎ 可用域名池</div></div>
           <div class="table-wrap">
-            <table>
+            <table class="stack-table">
               <thead><tr><th>域名</th><th>状态</th></tr></thead>
               <tbody>
                 ${active.length === 0
                   ? `<tr><td colspan="2" style="text-align:center;color:var(--text-muted)">暂无域名</td></tr>`
                   : active.map(d => `
                     <tr>
-                      <td style="font-family:var(--font-mono);font-size:0.82rem">${escHtml(d.domain)}</td>
-                      <td>${d.is_active
+                      ${buildDataLabel('域名', `<span style="font-family:var(--font-mono);font-size:0.82rem">${escHtml(d.domain)}</span>`)}
+                      ${buildDataLabel('状态', d.is_active
                         ? '<span class="badge badge-green">● 启用</span>'
-                        : '<span class="badge badge-gray">○ 停用</span>'}</td>
+                        : '<span class="badge badge-gray">○ 停用</span>')}
                     </tr>
                   `).join('')}
               </tbody>
@@ -1290,12 +1385,27 @@ async function renderDomainsGuide(container) {
               <div class="step-body">
                 <div class="step-title">配置 MX 记录（仅需一条）</div>
                 <div class="step-desc">在 DNS 面板添加以下记录，让 SMTP 邮件投递到本服务器：</div>
-                <table class="dns-table" style="margin-top:0.5rem">
+                <table class="dns-table stack-table" style="margin-top:0.5rem">
                   <thead><tr><th>类型</th><th>主机名</th><th>内容</th><th>优先级</th></tr></thead>
                   <tbody>
-                    <tr><td>MX</td><td>@</td><td style="font-family:monospace">${mxTarget}</td><td>10</td></tr>
-                    ${needsARec ? `<tr><td>A</td><td style="font-family:monospace">mail.yourdomain.com</td><td style="font-family:monospace">${ipLabel}</td><td>—</td></tr>` : ''}
-                    <tr><td>TXT</td><td>@</td><td style="font-family:monospace">v=spf1 ip4:${ipLabel} ~all</td><td>—</td></tr>
+                    <tr>
+                      ${buildDataLabel('类型', 'MX')}
+                      ${buildDataLabel('主机名', '@')}
+                      ${buildDataLabel('内容', `<span style="font-family:monospace">${mxTarget}</span>`)}
+                      ${buildDataLabel('优先级', '10')}
+                    </tr>
+                    ${needsARec ? `<tr>
+                      ${buildDataLabel('类型', 'A')}
+                      ${buildDataLabel('主机名', '<span style="font-family:monospace">mail.yourdomain.com</span>')}
+                      ${buildDataLabel('内容', `<span style="font-family:monospace">${ipLabel}</span>`)}
+                      ${buildDataLabel('优先级', '—')}
+                    </tr>` : ''}
+                    <tr>
+                      ${buildDataLabel('类型', 'TXT')}
+                      ${buildDataLabel('主机名', '@')}
+                      ${buildDataLabel('内容', `<span style="font-family:monospace">v=spf1 ip4:${ipLabel} ~all</span>`)}
+                      ${buildDataLabel('优先级', '—')}
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -1347,27 +1457,27 @@ async function renderAdminAccounts(container) {
         <div style="font-size:0.78rem;color:var(--text-muted)">共 ${(accounts||[]).length} 个账户</div>
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="admin-table stack-table">
           <thead>
             <tr><th>用户名</th><th>角色</th><th>创建时间</th><th>操作</th></tr>
           </thead>
           <tbody>
             ${(accounts||[]).map(a => `
               <tr>
-                <td>
+                ${buildDataLabel('用户名', `
                   <div style="font-weight:600">${escHtml(a.username || '—')}</div>
                   <div class="code-box" style="margin-top:0.3rem;font-size:0.72rem">
                     <span>${escHtml(a.api_key || '—')}</span>
                     <button class="copy-btn" onclick="copyText('${escHtml(a.api_key||'')}')">⎘</button>
                   </div>
-                </td>
-                <td>${a.is_admin
+                `)}
+                ${buildDataLabel('角色', a.is_admin
                   ? '<span class="badge badge-gold">管理员</span>'
-                  : '<span class="badge badge-gray">普通用户</span>'}</td>
-                <td style="font-size:0.8rem">${formatDate(a.created_at)}</td>
-                <td>
-                  ${!a.is_admin ? `<button class="btn btn-danger btn-sm" onclick="confirmDeleteAccount('${a.id}','${escHtml(a.username||'')}')">删除</button>` : ''}
-                </td>
+                  : '<span class="badge badge-gray">普通用户</span>')}
+                ${buildDataLabel('创建时间', formatDate(a.created_at), 'style="font-size:0.8rem"')}
+                ${buildDataLabel('操作', !a.is_admin
+                  ? `<div class="table-actions"><button class="btn btn-danger btn-sm" onclick="confirmDeleteAccount('${a.id}','${escHtml(a.username||'')}')">删除</button></div>`
+                  : '<span style="color:var(--text-muted)">—</span>')}
               </tr>
             `).join('')}
           </tbody>
@@ -1445,9 +1555,9 @@ async function renderAdminDomains(container) {
   const selectedIds = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]);
 
   container.innerHTML = `
-    <div style="max-width:1120px;display:flex;flex-direction:column;gap:1rem">
+    <div class="admin-domain-page" style="max-width:1120px;display:flex;flex-direction:column;gap:1rem">
       <div class="card">
-        <div class="card-body" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.8rem">
+        <div class="card-body admin-domain-summary" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.8rem">
           <div><div style="font-size:1.2rem;font-weight:700">${summary.total || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">总域名</div></div>
           <div><div style="font-size:1.2rem;font-weight:700">${summary.active || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Active</div></div>
           <div><div style="font-size:1.2rem;font-weight:700">${summary.pending || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Pending</div></div>
@@ -1485,7 +1595,7 @@ async function renderAdminDomains(container) {
       </div>
 
       <div class="card">
-        <div class="card-body" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0.8rem;align-items:end">
+        <div class="card-body admin-domain-filters" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0.8rem;align-items:end">
           <div class="form-group" style="margin:0">
             <label class="form-label">搜索域名</label>
             <input class="form-input" value="${escHtml(state.adminDomainQuery || '')}" placeholder="按域名关键字过滤" oninput="adminDomainSetFilter('query', this.value)" />
@@ -1516,21 +1626,23 @@ async function renderAdminDomains(container) {
             <div style="font-size:0.78rem;color:var(--text-muted)">后台每 30 秒自动检测，验证通过后自动加入域名池</div>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="admin-table stack-table">
               <thead><tr><th></th><th>域名</th><th>Hostname</th><th>上次检测</th><th>操作</th></tr></thead>
               <tbody id="pending-domains-tbody">
                 ${pending.map(d => `
                   <tr id="pending-row-${d.id}">
-                    <td><input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" /></td>
-                    <td style="font-family:var(--font-mono)">${escHtml(d.domain)}</td>
-                    <td style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</td>
-                    <td style="font-size:0.78rem">${d.mx_checked_at ? timeAgo(d.mx_checked_at) : '从未'}</td>
-                    <td>
-                      <span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span>
-                      <button class="btn btn-ghost btn-sm" style="margin-left:0.4rem" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
-                      <button class="btn btn-danger btn-sm" style="margin-left:0.4rem" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
-                      <button class="btn btn-danger btn-sm" style="margin-left:0.4rem" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">✕</button>
-                    </td>
+                    ${buildDataLabel('选择', `<input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" />`)}
+                    ${buildDataLabel('域名', `<span style="font-family:var(--font-mono)">${escHtml(d.domain)}</span>`)}
+                    ${buildDataLabel('Hostname', `<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</span>`)}
+                    ${buildDataLabel('上次检测', d.mx_checked_at ? timeAgo(d.mx_checked_at) : '从未', 'style="font-size:0.78rem"')}
+                    ${buildDataLabel('操作', `
+                      <div class="table-actions">
+                        <span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span>
+                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                        <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
+                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">✕</button>
+                      </div>
+                    `)}
                   </tr>
                 `).join('')}
               </tbody>
@@ -1545,24 +1657,26 @@ async function renderAdminDomains(container) {
           <div style="font-size:0.78rem;color:var(--text-muted)">共 ${regular.length} 个</div>
         </div>
         <div class="table-wrap">
-          <table>
+          <table class="admin-table stack-table">
             <thead><tr><th></th><th>域名</th><th>Hostname</th><th>状态</th><th>操作</th></tr></thead>
             <tbody>
               ${regular.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">暂无域名</td></tr>` :
                 regular.map(d => `
                   <tr>
-                    <td><input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" /></td>
-                    <td style="font-family:var(--font-mono)">${escHtml(d.domain)}</td>
-                    <td style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</td>
-                    <td>${d.is_active
+                    ${buildDataLabel('选择', `<input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" />`)}
+                    ${buildDataLabel('域名', `<span style="font-family:var(--font-mono)">${escHtml(d.domain)}</span>`)}
+                    ${buildDataLabel('Hostname', `<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</span>`)}
+                    ${buildDataLabel('状态', d.is_active
                       ? '<span class="badge badge-green">● 启用</span>'
-                      : '<span class="badge badge-gray">○ 停用</span>'}</td>
-                    <td style="display:flex;gap:0.5rem;align-items:center">
-                      <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
-                      <button class="btn btn-ghost btn-sm" onclick="toggleDomain(${d.id},${!d.is_active})">${d.is_active ? '停用' : '启用'}</button>
-                      <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
-                      <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">删除</button>
-                    </td>
+                      : '<span class="badge badge-gray">○ 停用</span>')}
+                    ${buildDataLabel('操作', `
+                      <div class="table-actions">
+                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                        <button class="btn btn-ghost btn-sm" onclick="toggleDomain(${d.id},${!d.is_active})">${d.is_active ? '停用' : '启用'}</button>
+                        <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
+                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">删除</button>
+                      </div>
+                    `)}
                   </tr>
                 `).join('')}
             </tbody>
