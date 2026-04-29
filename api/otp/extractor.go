@@ -13,7 +13,7 @@ var (
 	spacedNumberPattern   = regexp.MustCompile(`(?:^|[^0-9])((?:\d[\s\-]){3,7}\d)(?:$|[^0-9])`)
 	mixedPattern          = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Z0-9]{4,8})(?:$|[^A-Za-z0-9])`)
 	tagPattern            = regexp.MustCompile(`<[^>]+>`)
-	styleScriptPattern    = regexp.MustCompile(`(?is)<(style|script)\b[^>]*>.*?</\1\s*>`)
+	styleScriptPattern    = regexp.MustCompile(`(?is)<(?:style|script)\b[^>]*>.*?</(?:style|script)\s*>`)
 	htmlCommentPattern    = regexp.MustCompile(`(?s)<!--.*?-->`)
 	isolatedCodePattern   = regexp.MustCompile(`>\s*([A-Za-z0-9][A-Za-z0-9\s\-]{2,14}[A-Za-z0-9])\s*<`)
 )

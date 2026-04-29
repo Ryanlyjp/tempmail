@@ -863,21 +863,40 @@ window.toggleFavorite = async function(id, fav) {
 function extractCode(text) {
   if (!text) return null;
   const t = String(text).replace(/\s+/g, ' ');
-  // 1) 关键字锚定 4-8 位字母数字
-  const kw = /(?:验证码|校验码|动态码|安全码|verif(?:y|ication)?\s*code|one[\- ]?time\s*(?:code|password)|otp|pin|security\s*code)[^A-Za-z0-9]{0,8}([A-Za-z0-9]{4,8})/i;
-  let m = t.match(kw); if (m) return m[1].toUpperCase();
-  // 2) 独立 4-8 位纯数字
-  m = t.match(/(?<![A-Za-z0-9])\d{4,8}(?![A-Za-z0-9])/); if (m) return m[0];
-  // 3) 独立 4-8 位大写字母数字混合（必须含至少一位字母）
-  m = t.match(/(?<![A-Za-z0-9])(?=[A-Z0-9]{4,8}(?![A-Za-z0-9]))[A-Z0-9]*[A-Z][A-Z0-9]*/);
-  if (m) return m[0];
+  let m = t.match(/(?:验证码|校验码|动态码|安全码|verif(?:y|ication)?\s*code|one[\- ]?time\s*(?:code|password)|otp|pin|security\s*code)[^A-Za-z0-9]{0,8}([A-Za-z0-9]{4,8})/i);
+  if (m) return m[1].toUpperCase();
+  m = t.match(/(?:验证码|校验码|动态码|安全码|verif(?:y|ication)?\s*code|one[\- ]?time\s*(?:code|password)|otp|pin|security\s*code).{0,40}?(\d{4,8})(?:\D|$)/i);
+  if (m) return m[1];
+  m = t.match(/(?:验证码|校验码|动态码|安全码|verif(?:y|ication)?\s*code|one[\- ]?time\s*(?:code|password)|otp|pin|security\s*code)[^0-9]{0,16}((?:\d[\s\-]){3,7}\d)/i);
+  if (m) return m[1].replace(/[\s\-]+/g, '');
+  m = t.match(/(^|[^A-Za-z0-9])(\d{4,8})(?:$|[^A-Za-z0-9])/);
+  if (m) return m[2];
+  m = t.match(/(^|[^0-9])((?:\d[\s\-]){3,7}\d)(?:$|[^0-9])/);
+  if (m) return m[2].replace(/[\s\-]+/g, '');
+  m = t.match(/(^|[^A-Za-z0-9])([A-Z0-9]{4,8})(?:$|[^A-Za-z0-9])/);
+  if (m && /[A-Z]/.test(m[2]) && /\d/.test(m[2])) return m[2];
+  return null;
+}
+
+function extractCodeFromHtml(html) {
+  if (!html) return null;
+  const cleaned = String(html)
+    .replace(/<!--.*?-->/gs, ' ')
+    .replace(/<(?:style|script)[^>]*>.*?<\/(?:style|script)\s*>/gis, ' ');
+  const matches = cleaned.matchAll(/>\s*([A-Za-z0-9][A-Za-z0-9\s\-]{2,14}[A-Za-z0-9])\s*</g);
+  for (const m of matches) {
+    const code = String(m[1] || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (code.length >= 4 && code.length <= 8 && /\d/.test(code)) return code;
+  }
   return null;
 }
 
 function stripHtml(html) {
   if (!html) return '';
   const tmp = document.createElement('div');
-  tmp.innerHTML = html;
+  tmp.innerHTML = String(html)
+    .replace(/<!--.*?-->/gs, ' ')
+    .replace(/<(?:style|script)[^>]*>.*?<\/(?:style|script)\s*>/gis, ' ');
   return tmp.textContent || tmp.innerText || '';
 }
 
@@ -906,8 +925,8 @@ window.extractAndCopyCode = async function(mailboxID, fullAddress) {
 window.dashExtractCodeFromEmail = async function(mailboxID, emailID) {
   try {
     const full = await api.getEmail(mailboxID, emailID);
-    const text = (full.body_text || '') + '\n' + stripHtml(full.body_html || '') + '\n' + (full.subject || '');
-    const code = extractCode(text);
+    const code = extractCodeFromHtml(full.body_html || '') || extractCode((full.body_text || '') + '\n' + stripHtml(full.body_html || '') + '\n' + (full.subject || ''));
+    
     if (!code) { toast('未识别到验证码', 'warn'); return; }
     await navigator.clipboard.writeText(code).catch(() => {});
     toast(`已复制验证码：${code}`, 'success');
