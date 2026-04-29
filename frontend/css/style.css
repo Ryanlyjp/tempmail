@@ -607,9 +607,12 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   font-weight: 600;
 }
 
+.page:has(.three-pane-grid) {
+  max-width: none;
+}
 .three-pane-grid {
   display: grid;
-  grid-template-columns: 340px 400px 1fr;
+  grid-template-columns: 300px 360px minmax(0, 1fr);
   gap: 0.9rem;
   height: calc(100vh - 220px);
   min-height: 480px;
