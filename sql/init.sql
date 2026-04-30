@@ -116,6 +116,7 @@ INSERT INTO app_settings (key, value) VALUES ('api_subdomain_enabled', 'false') 
 INSERT INTO app_settings (key, value) VALUES ('api_subdomain_length', '5') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('api_domain_strategy', 'random') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('api_domain_fixed', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('api_mailbox_ttl_minutes', '') ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- 7. 数据库性能参数（在 postgresql.conf 或 docker 环境变量中设置更佳）

@@ -64,6 +64,7 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"announcement":           true,
 		"default_domain":         true,
 		"mailbox_ttl_minutes":    true,
+		"api_mailbox_ttl_minutes": true,
 		"catchall_enabled":       true,
 		"catchall_account_id":    true,
 		"cf_api_token":           true,

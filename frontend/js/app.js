@@ -474,6 +474,7 @@ async function renderPage(page) {
 
 // ─── Dashboard（三栏：邮箱列表 | 邮件列表 | 邮件正文） ──────────────
 const PAGE_SIZE = 20;
+const MAILBOX_PAGE_SIZE = 10;
 const dashState = {
   mailboxes: [],
   mailboxTotal: 0,
@@ -536,7 +537,7 @@ function applyMailboxPage(resp) {
 async function renderDashboard(container) {
   const isAdmin = state.account?.is_admin;
   const [mailboxesResp, domains, statsData, publicSettings] = await Promise.all([
-    api.listMailboxesPage(dashState.mailboxPage, PAGE_SIZE),
+    api.listMailboxesPage(dashState.mailboxPage, MAILBOX_PAGE_SIZE),
     api.domains(),
     api.stats().catch(() => null),
     api.publicSettings().catch(() => ({})),
@@ -600,7 +601,7 @@ function paneRenderMailboxes() {
   const pane = $('pane-mailboxes');
   if (!pane) return;
   const total = dashState.mailboxTotal;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / MAILBOX_PAGE_SIZE));
   if (dashState.mailboxPage > totalPages) dashState.mailboxPage = totalPages;
   const rows = dashState.mailboxes;
 
@@ -691,6 +692,9 @@ async function paneRenderEmails() {
     return;
   }
 
+  const mbIsFav = !!mb.is_favorite;
+  const mbFavIcon = mbIsFav ? '★' : '☆';
+  const mbFavTitle = mbIsFav ? '取消收藏' : '收藏（防过期）';
   pane.innerHTML = `
     <div class="pane-header">
       <div class="pane-header-main">
@@ -698,8 +702,10 @@ async function paneRenderEmails() {
         <span class="pane-title" title="${escHtml(mb.full_address)}">${escHtml(mb.full_address)}</span>
       </div>
       <div class="pane-header-actions">
+        <button class="btn btn-ghost btn-sm" onclick="toggleFavorite('${mb.id}',${!mbIsFav})" title="${mbFavTitle}">${mbFavIcon}</button>
         <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mb.full_address)}')" title="复制地址">⎘</button>
         <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDeleteMailbox('${mb.id}','${escHtml(mb.full_address)}')" title="删除邮箱">✕</button>
       </div>
     </div>
     <div class="pane-scroll" id="pane-emails-scroll"><div style="padding:1rem;text-align:center"><span class="spinner"></span></div></div>
@@ -852,7 +858,7 @@ window.dashDeleteEmail = async function(mid, eid) {
 window.dashChangePage = async function(kind, delta) {
   if (kind === 'mailbox') {
     dashState.mailboxPage = Math.max(1, dashState.mailboxPage + delta);
-    const resp = await api.listMailboxesPage(dashState.mailboxPage, PAGE_SIZE);
+    const resp = await api.listMailboxesPage(dashState.mailboxPage, MAILBOX_PAGE_SIZE);
     applyMailboxPage(resp);
     paneRenderMailboxes();
     paneRenderEmailView();
@@ -948,7 +954,20 @@ window.toggleFavorite = async function(id, fav) {
     // 在本地数组里就地更新，避免整页重拉
     const idx = dashState.mailboxes.findIndex(m => m.id === id);
     if (idx >= 0) dashState.mailboxes[idx] = updated;
-    if (dashState.selectedMailbox?.id === id) dashState.selectedMailbox = updated;
+    if (dashState.selectedMailbox?.id === id) {
+      dashState.selectedMailbox = updated;
+      // 同步刷新中栏 header（不重拉邮件，避免闪烁）
+      const headerActions = document.querySelector('#pane-emails .pane-header-actions');
+      if (headerActions) {
+        const newFav = !!updated.is_favorite;
+        headerActions.innerHTML = `
+          <button class="btn btn-ghost btn-sm" onclick="toggleFavorite('${updated.id}',${!newFav})" title="${newFav ? '取消收藏' : '收藏（防过期）'}">${newFav ? '★' : '☆'}</button>
+          <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(updated.full_address)}')" title="复制地址">⎘</button>
+          <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDeleteMailbox('${updated.id}','${escHtml(updated.full_address)}')" title="删除邮箱">✕</button>
+        `;
+      }
+    }
     paneRenderMailboxes();
     toast(fav ? '已收藏（不会被自动清理）' : '已取消收藏', 'success');
   } catch (e) {
@@ -1163,7 +1182,7 @@ window.createMailbox = async function() {
     btn.disabled  = true;
     btn.textContent = '创建中...';
     try {
-      const body = {};
+      const body = { source: 'web' };
       if (address) body.address = address;
       if (domain)  body.domain  = domain;
       if (subSection.style.display !== 'none' && subToggle.checked) {
@@ -1207,6 +1226,15 @@ window.confirmDeleteMailbox = function(id, addr) {
       try {
         await api.deleteMailbox(id);
         toast('邮箱已删除', 'success');
+        // 删除当前选中邮箱时清掉选中状态，避免后续 paneRenderEmails 拉一个不存在的邮箱
+        if (dashState.selectedMailbox?.id === id) {
+          dashState.selectedMailbox = null;
+          dashState.selectedEmailId = null;
+          dashState.emails = [];
+          dashState.emailTotal = 0;
+          dashState.emailPage = 1;
+        }
+        if (state.currentMailbox?.id === id) state.currentMailbox = null;
         navigate('dashboard');
       } catch(e) { toast('删除失败: ' + e.message, 'error'); }
     }
@@ -2298,6 +2326,7 @@ async function renderAdminSettings(container) {
   const siteTitle  = settings.site_title            || 'TempMail';
   const defDomain  = settings.default_domain        || '';
   const ttlMins    = settings.mailbox_ttl_minutes   || '30';
+  const apiTtlMins = settings.api_mailbox_ttl_minutes || '';
   const catchallEnabled = settings.catchall_enabled === 'true' || settings.catchall_enabled === true;
   const catchallAccountId = settings.catchall_account_id || '';
   const cfApiToken = settings.cf_api_token || '';
@@ -2362,8 +2391,12 @@ async function renderAdminSettings(container) {
         ${inputRow('input-default-domain', '默认邮箱域名', defDomain, '创建邮箱时下拉框优先选中的域名', 'mail.example.com')}
         <div class="divider"></div>
 
-        <!-- 邮箱 TTL -->
-        ${inputRow('input-mailbox-ttl-minutes', '邮箱有效期（分钟）', ttlMins, '新建邮箱的默认存活时间，0 = 永不过期', '30')}
+        <!-- 邮箱 TTL（前端创建） -->
+        ${inputRow('input-mailbox-ttl-minutes', '邮箱有效期（分钟）', ttlMins, '前端 Web UI 创建邮箱的默认存活时间，0 = 永不过期', '30')}
+        <div class="divider"></div>
+
+        <!-- 邮箱 TTL（API 创建） -->
+        ${inputRow('input-api-mailbox-ttl-minutes', 'API 创建邮箱有效期（分钟）', apiTtlMins, '通过 API 创建邮箱时的存活时间。留空 = 复用上方"邮箱有效期"，0 = 永不过期', '留空则与上方一致')}
         <div class="divider"></div>
 
         <!-- Catch-all -->

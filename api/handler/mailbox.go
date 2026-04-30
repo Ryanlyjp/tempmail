@@ -41,6 +41,7 @@ func (h *MailboxHandler) Create(c *gin.Context) {
 		SubdomainMode   string `json:"subdomain_mode"`
 		Subdomain       string `json:"subdomain"`
 		SubdomainLength int    `json:"subdomain_length"`
+		Source          string `json:"source"`
 	}
 	c.ShouldBindJSON(&req)
 
@@ -52,11 +53,26 @@ func (h *MailboxHandler) Create(c *gin.Context) {
 	}
 	address = strings.ToLower(address)
 
-	// 读取 TTL 设置
+	// 读取 TTL 设置：source != "web" 视为 API 创建，优先用 api_mailbox_ttl_minutes，
+	// 留空 / 不存在时回退到 mailbox_ttl_minutes。0 = 永不过期。
 	ttlMinutes := 30
-	if ttlStr, err := h.store.GetSetting(ctx, "mailbox_ttl_minutes"); err == nil {
-		if n, err := strconv.Atoi(ttlStr); err == nil && n > 0 {
-			ttlMinutes = n
+	isWeb := strings.EqualFold(strings.TrimSpace(req.Source), "web")
+	resolved := false
+	if !isWeb {
+		if apiTTLStr, err := h.store.GetSetting(ctx, "api_mailbox_ttl_minutes"); err == nil {
+			if s := strings.TrimSpace(apiTTLStr); s != "" {
+				if n, err := strconv.Atoi(s); err == nil && n > 0 {
+					ttlMinutes = n
+					resolved = true
+				}
+			}
+		}
+	}
+	if !resolved {
+		if ttlStr, err := h.store.GetSetting(ctx, "mailbox_ttl_minutes"); err == nil {
+			if n, err := strconv.Atoi(ttlStr); err == nil && n > 0 {
+				ttlMinutes = n
+			}
 		}
 	}
 

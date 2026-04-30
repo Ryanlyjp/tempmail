@@ -16,6 +16,13 @@ func RateLimit(rdb *redis.Client, limit int, window int) gin.HandlerFunc {
 	windowDur := time.Duration(window) * time.Second
 
 	return func(c *gin.Context) {
+		// 管理员豁免：管理员 API Key 不受限速约束（用于 chatgpt2api 等高并发集成）
+		if account := GetAccount(c); account != nil && account.IsAdmin {
+			c.Header("X-RateLimit-Limit", "unlimited")
+			c.Next()
+			return
+		}
+
 		// 使用 API Key 作为限速键
 		key := c.GetHeader("Authorization")
 		if key == "" {

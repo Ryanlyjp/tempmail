@@ -126,6 +126,8 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('api_domain_fixed', '')
 			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('api_mailbox_ttl_minutes', '')
+			ON CONFLICT (key) DO NOTHING`,
 	}
 
 	for _, stmt := range stmts {
