@@ -72,6 +72,43 @@ func ExtractBaseDomain(fqdn string) (string, error) {
 	return strings.Join(parts[len(parts)-2:], "."), nil
 }
 
+func (c *Client) FindBestZoneForDomain(fqdn string) (*Zone, error) {
+	fqdn = strings.Trim(strings.ToLower(strings.TrimSpace(fqdn)), ".")
+	req, _ := http.NewRequest("GET", baseURL+"/zones?per_page=100", nil)
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("CF API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data responseWithZones
+	if err := decodeBody(resp.Body, &data); err != nil {
+		return nil, err
+	}
+	if !data.Success {
+		return nil, fmt.Errorf("CF API error: %s", firstError(data.Errors))
+	}
+
+	var best *Zone
+	bestLen := -1
+	for _, z := range data.Result {
+		name := strings.Trim(strings.ToLower(strings.TrimSpace(z.Name)), ".")
+		if fqdn == name || strings.HasSuffix(fqdn, "."+name) {
+			if len(name) > bestLen {
+				zz := z
+				best = &zz
+				bestLen = len(name)
+			}
+		}
+	}
+	if best == nil {
+		return nil, fmt.Errorf("zone not found for domain: %s", fqdn)
+	}
+	return best, nil
+}
+
 func (c *Client) FindZoneByName(zoneName string) (*Zone, error) {
 	req, _ := http.NewRequest("GET", baseURL+"/zones?name="+url.QueryEscape(zoneName), nil)
 	req.Header.Set("Authorization", "Bearer "+c.Token)

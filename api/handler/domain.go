@@ -427,18 +427,20 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 	}
 
 	zoneName := req.Zone
+	var zone *cf.Zone
 	if zoneName == "" {
-		zoneName, err = cf.ExtractBaseDomain(req.Domain)
+		zone, err = client.FindBestZoneForDomain(req.Domain)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "域名格式不合法，至少需要子域名.主域名（如 sub.example.com）: " + err.Error(), "domain": req.Domain})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "自动识别 Cloudflare Zone 失败: " + err.Error(), "domain": req.Domain})
 			return
 		}
-	}
-
-	zone, err := client.FindZoneByName(zoneName)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "查找 Cloudflare Zone 失败: " + err.Error(), "domain": req.Domain, "zone": zoneName})
-		return
+		zoneName = zone.Name
+	} else {
+		zone, err = client.FindZoneByName(zoneName)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "查找 Cloudflare Zone 失败: " + err.Error(), "domain": req.Domain, "zone": zoneName})
+			return
+		}
 	}
 
 	subdomain := strings.TrimSuffix(req.Domain, "."+zone.Name)
@@ -455,9 +457,15 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 	skippedCF := existing != nil
 	record := existing
 	if !skippedCF {
-		record, err = client.CreateMXRecord(zone.ID, subdomain, req.Hostname)
+		// Cloudflare API requires the zone apex record name to be the full zone name,
+		// not an empty string. Subdomain records still use the relative name.
+		mxRecordName := subdomain
+		if mxRecordName == "" {
+			mxRecordName = zone.Name
+		}
+		record, err = client.CreateMXRecord(zone.ID, mxRecordName, req.Hostname)
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "创建 Cloudflare DNS 记录失败: " + err.Error(), "zone": zone.Name, "subdomain": subdomain, "mx_target": req.Hostname})
+			c.JSON(http.StatusBadGateway, gin.H{"error": "创建 Cloudflare DNS 记录失败: " + err.Error(), "zone": zone.Name, "subdomain": subdomain, "mx_record_name": mxRecordName, "mx_target": req.Hostname})
 			return
 		}
 	}
