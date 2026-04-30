@@ -128,8 +128,10 @@ func main() {
 			admin.DELETE("/domains/:id/cf", domainH.CFDelete)
 			admin.PUT("/domains/:id/toggle", domainH.Toggle)
 			admin.PUT("/domains/:id/hostname", domainH.UpdateHostname)
+			admin.PUT("/domains/:id/subdomain", domainH.UpdateSubdomain)
 			admin.PUT("/domains/batch/toggle", domainH.BatchToggle)
 			admin.PUT("/domains/batch/delete", domainH.BatchDelete)
+			admin.PUT("/domains/batch/subdomain", domainH.BatchSubdomain)
 			admin.POST("/domains/cf-create", domainH.CFCreate)
 			admin.POST("/domains/mx-import", domainH.MXImport)
 			admin.POST("/domains/mx-register", domainH.MXRegister)
@@ -196,11 +198,31 @@ func main() {
 				localPart := recipient[:atIdx]
 				domainPart := recipient[atIdx+1:]
 
-				// 域名必须已托管且 active
+				// 域名必须已托管且 active：先精确匹配，未命中再对启用了
+				// 多级子域名的域名做后缀匹配（xx.bb.cc.dd → base=bb.cc.dd）。
+				// catch-all 仍按 base 域名落账，full_address 保留完整 recipient。
 				domainRec, err := db.GetDomainByName(ctx, domainPart)
 				if err != nil {
-					c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "domain not hosted"})
-					return
+					subEnabled, listErr := db.ListSubdomainEnabledDomains(ctx)
+					if listErr != nil || len(subEnabled) == 0 {
+						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "domain not hosted"})
+						return
+					}
+					names := make([]string, 0, len(subEnabled))
+					for _, d := range subEnabled {
+						names = append(names, d.Domain)
+					}
+					_, base, ok := store.SplitFullDomain(domainPart, names)
+					if !ok {
+						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "domain not hosted"})
+						return
+					}
+					baseRec, berr := db.GetDomainByName(ctx, base)
+					if berr != nil {
+						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "base domain not active"})
+						return
+					}
+					domainRec = baseRec
 				}
 
 				// 决定归属账号

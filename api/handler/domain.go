@@ -68,6 +68,14 @@ func (h *DomainHandler) buildDNSRecords(ctx context.Context, domain, domainHostn
 	return records
 }
 
+// buildWildcardDNSRecords 返回启用多级子域名时需额外配置的通配 MX 记录
+func (h *DomainHandler) buildWildcardDNSRecords(ctx context.Context, domain, domainHostname string) []gin.H {
+	mxTarget := h.getEffectiveHostname(ctx, domain, domainHostname)
+	return []gin.H{
+		{"type": "MX", "host": "*", "value": mxTarget, "priority": 10, "description": "通配 MX，启用多级子域名时必需"},
+	}
+}
+
 func (h *DomainHandler) getCFClient(ctx context.Context) (*cf.Client, string, error) {
 	token, err := h.store.GetSetting(ctx, "cf_api_token")
 	if err != nil || strings.TrimSpace(token) == "" {
@@ -79,8 +87,10 @@ func (h *DomainHandler) getCFClient(ctx context.Context) (*cf.Client, string, er
 // POST /api/admin/domains - 添加域名到池（管理员）
 func (h *DomainHandler) Add(c *gin.Context) {
 	var req struct {
-		Domain   string `json:"domain" binding:"required"`
-		Hostname string `json:"hostname"`
+		Domain                string `json:"domain" binding:"required"`
+		Hostname              string `json:"hostname"`
+		SubdomainEnabled      bool   `json:"subdomain_enabled"`
+		SubdomainRandomLength int    `json:"subdomain_random_length"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -89,17 +99,19 @@ func (h *DomainHandler) Add(c *gin.Context) {
 
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
+	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
 
-	domain, err := h.store.AddDomain(c.Request.Context(), req.Domain, req.Hostname)
+	domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "domain already exists: " + err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"domain":       domain,
-		"dns_records":  h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
-		"instructions": fmt.Sprintf("请在域名 %s 的 DNS 管理面板中添加以上记录。添加后约 5-30 分钟生效。", req.Domain),
+		"domain":           domain,
+		"dns_records":      h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+		"wildcard_records": h.buildWildcardDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+		"instructions":     fmt.Sprintf("请在域名 %s 的 DNS 管理面板中添加以上记录。添加后约 5-30 分钟生效。", req.Domain),
 	})
 }
 
@@ -193,9 +205,11 @@ func (h *DomainHandler) UpdateHostname(c *gin.Context) {
 // POST /api/admin/domains/mx-import - MX快捷接入（DNS检测并自动导入）
 func (h *DomainHandler) MXImport(c *gin.Context) {
 	var req struct {
-		Domain   string `json:"domain" binding:"required"`
-		Hostname string `json:"hostname"`
-		Force    bool   `json:"force"`
+		Domain                string `json:"domain" binding:"required"`
+		Hostname              string `json:"hostname"`
+		Force                 bool   `json:"force"`
+		SubdomainEnabled      bool   `json:"subdomain_enabled"`
+		SubdomainRandomLength int    `json:"subdomain_random_length"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -203,22 +217,36 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 	}
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
+	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
 
 	serverIP := h.getServerIP(c.Request.Context())
 	matched, mxHosts, mxStatus := store.CheckDomainMX(req.Domain, serverIP)
-	if !matched && !req.Force {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error":     "MX检测未通过，如确定要导入请加 force:true",
-			"mx_status": mxStatus,
-			"mx_hosts":  mxHosts,
-			"server_ip": serverIP,
-			"domain":    req.Domain,
-			"dns_hint":  h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
-		})
+
+	wildcardMatched := false
+	wildcardStatus := ""
+	if req.SubdomainEnabled {
+		wildcardMatched, _, wildcardStatus = store.CheckWildcardMX(req.Domain, serverIP)
+	}
+
+	if !req.Force && (!matched || (req.SubdomainEnabled && !wildcardMatched)) {
+		resp := gin.H{
+			"error":              "MX检测未通过，如确定要导入请加 force:true",
+			"mx_status":          mxStatus,
+			"mx_hosts":           mxHosts,
+			"server_ip":          serverIP,
+			"domain":             req.Domain,
+			"dns_hint":           h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+			"wildcard_dns_hint":  h.buildWildcardDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+		}
+		if req.SubdomainEnabled {
+			resp["wildcard_mx_status"] = wildcardStatus
+			resp["wildcard_mx_matched"] = wildcardMatched
+		}
+		c.JSON(http.StatusUnprocessableEntity, resp)
 		return
 	}
 
-	domain, err := h.store.AddDomain(c.Request.Context(), req.Domain, req.Hostname)
+	domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "域名已存在"})
@@ -228,12 +256,17 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	resp := gin.H{
 		"domain":     domain,
 		"mx_status":  mxStatus,
 		"mx_matched": matched,
 		"message":    fmt.Sprintf("域名 %s 已导入域名池，Postfix 将在 60 秒内自动同步", req.Domain),
-	})
+	}
+	if req.SubdomainEnabled {
+		resp["wildcard_mx_status"] = wildcardStatus
+		resp["wildcard_mx_matched"] = wildcardMatched
+	}
+	c.JSON(http.StatusCreated, resp)
 }
 
 // POST /api/admin/domains/mx-register - 提交域名等待自动MX验证（无需手动确认）
@@ -284,12 +317,13 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"domain":       domain,
-		"status":       domain.Status,
-		"server_ip":    serverIP,
-		"mx_status":    mxStatus,
-		"message":      fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", req.Domain),
-		"dns_required": h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+		"domain":            domain,
+		"status":            domain.Status,
+		"server_ip":         serverIP,
+		"mx_status":         mxStatus,
+		"message":           fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", req.Domain),
+		"dns_required":      h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+		"wildcard_required": h.buildWildcardDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
 	})
 }
 
@@ -330,12 +364,13 @@ func (h *DomainHandler) Submit(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, gin.H{
-		"domain":       d,
-		"status":       d.Status,
-		"server_ip":    serverIP,
-		"mx_status":    mxStatus,
-		"message":      fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", domain),
-		"dns_required": h.buildDNSRecords(c.Request.Context(), domain, ""),
+		"domain":            d,
+		"status":            d.Status,
+		"server_ip":         serverIP,
+		"mx_status":         mxStatus,
+		"message":           fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", domain),
+		"dns_required":      h.buildDNSRecords(c.Request.Context(), domain, ""),
+		"wildcard_required": h.buildWildcardDNSRecords(c.Request.Context(), domain, ""),
 	})
 }
 
@@ -366,9 +401,11 @@ func (h *DomainHandler) GetStatus(c *gin.Context) {
 // POST /api/admin/domains/cf-create - 通过 Cloudflare API 自动创建子域名 MX 解析
 func (h *DomainHandler) CFCreate(c *gin.Context) {
 	var req struct {
-		Domain   string `json:"domain" binding:"required"`
-		Hostname string `json:"hostname"`
-		Zone     string `json:"zone"`
+		Domain                string `json:"domain" binding:"required"`
+		Hostname              string `json:"hostname"`
+		Zone                  string `json:"zone"`
+		SubdomainEnabled      bool   `json:"subdomain_enabled"`
+		SubdomainRandomLength int    `json:"subdomain_random_length"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -377,6 +414,7 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.Zone = strings.TrimSpace(req.Zone)
+	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
 	if req.Hostname == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 hostname（MX 记录目标，如 mail.example.com）"})
 		return
@@ -443,11 +481,36 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 		}
 	}
 
+	// 通配 MX：当 subdomain_enabled=true 时同步创建 *.<domain> 的 MX 记录
+	var wildcardRecord *cf.DNSRecord
+	wildcardCFCreated := false
+	if req.SubdomainEnabled {
+		wildcardSub := "*"
+		if subdomain != "" {
+			wildcardSub = "*." + subdomain
+		}
+		existingWild, werr := client.FindMXRecord(zone.ID, wildcardSub, zone.Name, req.Hostname)
+		if werr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "查询 Cloudflare 通配 MX 记录失败: " + werr.Error(), "zone": zone.Name, "subdomain": wildcardSub})
+			return
+		}
+		wildcardRecord = existingWild
+		if existingWild == nil {
+			created, werr := client.CreateMXRecord(zone.ID, wildcardSub, req.Hostname)
+			if werr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "创建 Cloudflare 通配 MX 记录失败: " + werr.Error(), "zone": zone.Name, "subdomain": wildcardSub, "mx_target": req.Hostname})
+				return
+			}
+			wildcardRecord = created
+			wildcardCFCreated = true
+		}
+	}
+
 	var domain *model.Domain
 	if skippedCF {
-		domain, err = h.store.AddDomain(c.Request.Context(), req.Domain, req.Hostname)
+		domain, err = h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	} else {
-		domain, err = h.store.AddDomainPending(c.Request.Context(), req.Domain, req.Hostname)
+		domain, err = h.store.AddDomainPendingWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
@@ -462,14 +525,26 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 	if skippedCF {
 		message = fmt.Sprintf("Cloudflare Zone %s 中已存在 %s 的 MX 记录（→ %s），域名已直接激活", zone.Name, req.Domain, req.Hostname)
 	}
+	if req.SubdomainEnabled {
+		if wildcardCFCreated {
+			message += "；并已创建通配 MX 以支持多级子域名"
+		} else {
+			message += "；通配 MX 已存在，多级子域名已就绪"
+		}
+	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	resp := gin.H{
 		"domain":    domain,
 		"cf_record": record,
 		"zone":      zone.Name,
 		"mx_target": req.Hostname,
 		"message":   message,
-	})
+	}
+	if req.SubdomainEnabled {
+		resp["wildcard_cf_record"] = wildcardRecord
+		resp["wildcard_cf_created"] = wildcardCFCreated
+	}
+	c.JSON(http.StatusCreated, resp)
 }
 
 // DELETE /api/admin/domains/:id/cf - 删除 Cloudflare MX 后再删除本地域名
@@ -492,6 +567,49 @@ func (h *DomainHandler) CFDelete(c *gin.Context) {
 		"zone":              zoneName,
 		"cf_record_deleted": deletedCF,
 	})
+}
+
+// PUT /api/admin/domains/:id/subdomain - 更新域名的多级子域名配置
+func (h *DomainHandler) UpdateSubdomain(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid domain id"})
+		return
+	}
+
+	var req struct {
+		Enabled      bool `json:"enabled"`
+		RandomLength int  `json:"random_length"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.RandomLength = store.ClampSubdomainLength(req.RandomLength)
+
+	if err := h.store.UpdateDomainSubdomain(c.Request.Context(), id, req.Enabled, req.RandomLength); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "subdomain settings updated"})
+}
+
+// PUT /api/admin/domains/batch/subdomain - 批量启用/停用多级子域
+func (h *DomainHandler) BatchSubdomain(c *gin.Context) {
+	var req struct {
+		IDs     []int `json:"ids" binding:"required"`
+		Enabled bool  `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	updated, err := h.store.BatchToggleDomainsSubdomain(c.Request.Context(), req.IDs, req.Enabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": updated, "total": len(req.IDs)})
 }
 
 // PUT /api/admin/domains/batch/toggle - 批量启用/禁用域名
@@ -593,6 +711,20 @@ func (h *DomainHandler) deleteDomainWithCloudflare(ctx context.Context, id int) 
 		}
 		deletedCF = true
 	}
+
+	// 通配 MX：若存在则一并删除（容忍未启用 subdomain 但残留通配记录的情况）
+	wildcardSub := "*"
+	if subdomain != "" {
+		wildcardSub = "*." + subdomain
+	}
+	wildcardRecord, werr := client.FindMXRecord(zone.ID, wildcardSub, zone.Name, targetHostname)
+	if werr == nil && wildcardRecord != nil {
+		if err := client.DeleteDNSRecord(zone.ID, wildcardRecord.ID); err != nil {
+			return nil, deletedCF, zone.Name, fmt.Errorf("删除 Cloudflare 通配 MX 记录失败: %w", err)
+		}
+		deletedCF = true
+	}
+
 	if txtRecord != nil {
 		content := strings.Trim(txtRecord.Content, "\"")
 		if content == spfValue {

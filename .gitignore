@@ -17,3 +17,5 @@ api/*.exe
 # OS
 .DS_Store
 Thumbs.db
+
+PLAN_SUBDOMAIN.md

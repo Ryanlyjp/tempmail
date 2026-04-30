@@ -26,17 +26,21 @@ CREATE INDEX idx_accounts_api_key ON accounts (api_key);
 -- 2. 域名池表 (domains)
 -- ============================================================
 CREATE TABLE domains (
-    id            SERIAL PRIMARY KEY,
-    domain        VARCHAR(255) NOT NULL UNIQUE,
-    hostname      VARCHAR(255) NOT NULL DEFAULT '',
-    is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
-    status        VARCHAR(16)  NOT NULL DEFAULT 'active',  -- active / pending / disabled
+    id                       SERIAL PRIMARY KEY,
+    domain                   VARCHAR(255) NOT NULL UNIQUE,
+    hostname                 VARCHAR(255) NOT NULL DEFAULT '',
+    is_active                BOOLEAN      NOT NULL DEFAULT TRUE,
+    status                   VARCHAR(16)  NOT NULL DEFAULT 'active',  -- active / pending / disabled
+    subdomain_enabled        BOOLEAN      NOT NULL DEFAULT FALSE,
+    subdomain_random_length  INT          NOT NULL DEFAULT 5
+        CHECK (subdomain_random_length BETWEEN 2 AND 8),
     mx_checked_at TIMESTAMPTZ,                             -- 最近一次 MX 检测时间
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_domains_active ON domains (is_active) WHERE is_active = TRUE;
 CREATE INDEX idx_domains_status ON domains (status) WHERE status = 'pending';
+CREATE INDEX idx_domains_subdomain_enabled ON domains (subdomain_enabled) WHERE subdomain_enabled = TRUE;
 
 -- ============================================================
 -- 3. 邮箱表 (mailboxes)
@@ -108,6 +112,10 @@ INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30') ON CO
 INSERT INTO app_settings (key, value) VALUES ('catchall_enabled', 'false') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('cf_api_token', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('api_subdomain_enabled', 'false') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('api_subdomain_length', '5') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('api_domain_strategy', 'random') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('api_domain_fixed', '') ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- 7. 数据库性能参数（在 postgresql.conf 或 docker 环境变量中设置更佳）

@@ -67,6 +67,10 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"catchall_enabled":       true,
 		"catchall_account_id":    true,
 		"cf_api_token":           true,
+		"api_subdomain_enabled":  true,
+		"api_subdomain_length":   true,
+		"api_domain_strategy":    true,
+		"api_domain_fixed":       true,
 	}
 
 	for k, v := range req {

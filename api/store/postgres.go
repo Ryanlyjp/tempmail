@@ -83,6 +83,17 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			WHERE status <> 'pending'`,
 		`ALTER TABLE domains
 			ADD COLUMN IF NOT EXISTS mx_checked_at TIMESTAMPTZ`,
+		`ALTER TABLE domains
+			ADD COLUMN IF NOT EXISTS subdomain_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE domains
+			ADD COLUMN IF NOT EXISTS subdomain_random_length INT NOT NULL DEFAULT 5`,
+		`ALTER TABLE domains
+			DROP CONSTRAINT IF EXISTS domains_subdomain_random_length_chk`,
+		`ALTER TABLE domains
+			ADD CONSTRAINT domains_subdomain_random_length_chk
+			CHECK (subdomain_random_length BETWEEN 2 AND 8)`,
+		`CREATE INDEX IF NOT EXISTS idx_domains_subdomain_enabled
+			ON domains (subdomain_enabled) WHERE subdomain_enabled = TRUE`,
 		`CREATE INDEX IF NOT EXISTS idx_domains_status
 			ON domains (status) WHERE status = 'pending'`,
 		`ALTER TABLE mailboxes
@@ -106,6 +117,14 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 		`INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('cf_api_token', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('api_subdomain_enabled', 'false')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('api_subdomain_length', '5')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('api_domain_strategy', 'random')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('api_domain_fixed', '')
 			ON CONFLICT (key) DO NOTHING`,
 	}
 
@@ -187,12 +206,22 @@ func (s *Store) GetAdminAPIKey(ctx context.Context) (string, error) {
 // ==================== Domain ====================
 
 func (s *Store) AddDomain(ctx context.Context, domain, hostname string) (*model.Domain, error) {
+	return s.AddDomainWithOptions(ctx, domain, hostname, false, 5)
+}
+
+// AddDomainWithOptions 添加（已激活）域名，并可指定多级子域名相关字段
+func (s *Store) AddDomainWithOptions(ctx context.Context, domain, hostname string, subdomainEnabled bool, subdomainRandomLength int) (*model.Domain, error) {
+	if subdomainRandomLength < 2 || subdomainRandomLength > 8 {
+		subdomainRandomLength = 5
+	}
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO domains (domain, hostname, is_active, status) VALUES ($1, $2, TRUE, 'active')
-		 RETURNING id, domain, hostname, is_active, status, created_at, mx_checked_at`,
-		strings.ToLower(domain), strings.TrimSpace(hostname),
-	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+		`INSERT INTO domains (domain, hostname, is_active, status, subdomain_enabled, subdomain_random_length)
+		 VALUES ($1, $2, TRUE, 'active', $3, $4)
+		 RETURNING id, domain, hostname, is_active, status, subdomain_enabled, subdomain_random_length, created_at, mx_checked_at`,
+		strings.ToLower(domain), strings.TrimSpace(hostname), subdomainEnabled, subdomainRandomLength,
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status,
+		&d.SubdomainEnabled, &d.SubdomainRandomLength, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -201,16 +230,28 @@ func (s *Store) AddDomain(ctx context.Context, domain, hostname string) (*model.
 
 // AddDomainPending 添加待验证域名（后台轮询 MX 记录）
 func (s *Store) AddDomainPending(ctx context.Context, domain, hostname string) (*model.Domain, error) {
+	return s.AddDomainPendingWithOptions(ctx, domain, hostname, false, 5)
+}
+
+// AddDomainPendingWithOptions 添加待验证域名，并可指定多级子域名相关字段
+func (s *Store) AddDomainPendingWithOptions(ctx context.Context, domain, hostname string, subdomainEnabled bool, subdomainRandomLength int) (*model.Domain, error) {
+	if subdomainRandomLength < 2 || subdomainRandomLength > 8 {
+		subdomainRandomLength = 5
+	}
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO domains (domain, hostname, is_active, status) VALUES ($1, $2, FALSE, 'pending')
+		`INSERT INTO domains (domain, hostname, is_active, status, subdomain_enabled, subdomain_random_length)
+		 VALUES ($1, $2, FALSE, 'pending', $3, $4)
 		 ON CONFLICT (domain) DO UPDATE
 		   SET status = CASE WHEN domains.status = 'active' THEN 'active' ELSE 'pending' END,
 		       is_active = CASE WHEN domains.status = 'active' THEN TRUE ELSE FALSE END,
-		       hostname = CASE WHEN EXCLUDED.hostname <> '' THEN EXCLUDED.hostname ELSE domains.hostname END
-		 RETURNING id, domain, hostname, is_active, status, created_at, mx_checked_at`,
-		strings.ToLower(domain), strings.TrimSpace(hostname),
-	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+		       hostname = CASE WHEN EXCLUDED.hostname <> '' THEN EXCLUDED.hostname ELSE domains.hostname END,
+		       subdomain_enabled = EXCLUDED.subdomain_enabled OR domains.subdomain_enabled,
+		       subdomain_random_length = EXCLUDED.subdomain_random_length
+		 RETURNING id, domain, hostname, is_active, status, subdomain_enabled, subdomain_random_length, created_at, mx_checked_at`,
+		strings.ToLower(domain), strings.TrimSpace(hostname), subdomainEnabled, subdomainRandomLength,
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status,
+		&d.SubdomainEnabled, &d.SubdomainRandomLength, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +260,9 @@ func (s *Store) AddDomainPending(ctx context.Context, domain, hostname string) (
 
 func (s *Store) ListDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
 		 FROM domains ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -250,7 +293,9 @@ func (s *Store) ListDomainsFiltered(ctx context.Context, filter DomainFilter) ([
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
 		 FROM domains
 		 WHERE %s
 		 ORDER BY created_at`,
@@ -283,8 +328,24 @@ func (s *Store) GetDomainSummary(ctx context.Context) (*model.DomainSummary, err
 
 func (s *Store) GetActiveDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
 		 FROM domains WHERE is_active = TRUE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[model.Domain])
+}
+
+// ListSubdomainEnabledDomains 返回所有开启了多级子域的活跃域名（catch-all 后缀匹配用）
+func (s *Store) ListSubdomainEnabledDomains(ctx context.Context) ([]model.Domain, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
+		 FROM domains WHERE is_active = TRUE AND subdomain_enabled = TRUE`)
 	if err != nil {
 		return nil, err
 	}
@@ -295,9 +356,12 @@ func (s *Store) GetActiveDomains(ctx context.Context) ([]model.Domain, error) {
 func (s *Store) GetRandomActiveDomain(ctx context.Context) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at FROM domains
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at FROM domains
 		 WHERE is_active = TRUE ORDER BY RANDOM() LIMIT 1`,
-	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status,
+		&d.SubdomainEnabled, &d.SubdomainRandomLength, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -308,10 +372,13 @@ func (s *Store) GetRandomActiveDomain(ctx context.Context) (*model.Domain, error
 func (s *Store) GetDomainByName(ctx context.Context, domain string) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
 		 FROM domains WHERE domain = $1 AND is_active = TRUE`,
 		strings.ToLower(domain),
-	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status,
+		&d.SubdomainEnabled, &d.SubdomainRandomLength, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -321,9 +388,12 @@ func (s *Store) GetDomainByName(ctx context.Context, domain string) (*model.Doma
 func (s *Store) GetDomainByID(ctx context.Context, domainID int) (*model.Domain, error) {
 	var d model.Domain
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at FROM domains WHERE id = $1`,
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at FROM domains WHERE id = $1`,
 		domainID,
-	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status, &d.CreatedAt, &d.MxCheckedAt)
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status,
+		&d.SubdomainEnabled, &d.SubdomainRandomLength, &d.CreatedAt, &d.MxCheckedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +403,9 @@ func (s *Store) GetDomainByID(ctx context.Context, domainID int) (*model.Domain,
 // ListPendingDomains 返回所有待验证域名
 func (s *Store) ListPendingDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, domain, hostname, is_active, status, created_at, mx_checked_at
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
 		 FROM domains WHERE status = 'pending'
 		 ORDER BY created_at`)
 	if err != nil {
@@ -403,6 +475,40 @@ func (s *Store) BatchToggleDomains(ctx context.Context, ids []int, active bool) 
 	}
 	query := fmt.Sprintf(
 		`UPDATE domains SET is_active = $1, status = $2 WHERE id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	tag, err := s.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// UpdateDomainSubdomain 更新域名的多级子域配置（开关 + 随机长度）
+func (s *Store) UpdateDomainSubdomain(ctx context.Context, domainID int, enabled bool, randomLength int) error {
+	if randomLength < 2 || randomLength > 8 {
+		randomLength = 5
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE domains SET subdomain_enabled = $1, subdomain_random_length = $2 WHERE id = $3`,
+		enabled, randomLength, domainID,
+	)
+	return err
+}
+
+// BatchToggleDomainsSubdomain 批量启用/停用多级子域
+func (s *Store) BatchToggleDomainsSubdomain(ctx context.Context, ids []int, enabled bool) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	args := []any{enabled}
+	placeholders := make([]string, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
+	query := fmt.Sprintf(
+		`UPDATE domains SET subdomain_enabled = $1 WHERE id IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	tag, err := s.pool.Exec(ctx, query, args...)
@@ -625,6 +731,14 @@ func CheckDomainMX(domain, serverIP string) (matched bool, mxHosts []string, sta
 		}
 	}
 	return false, mxHosts, fmt.Sprintf("MX记录(%s)未指向本服务器(%s)", strings.Join(mxHosts, ","), serverIP)
+}
+
+// CheckWildcardMX 通过对一个随机探测子域 probeXXXX.<domain> 做 MX 查询，
+// 验证 *.<domain> 通配 MX 是否生效。返回探测使用的 FQDN 与状态串。
+func CheckWildcardMX(domain, serverIP string) (matched bool, probe string, status string) {
+	probe = "probe" + GenerateRandomSubdomain(6) + "." + strings.TrimSpace(strings.ToLower(domain))
+	matched, _, status = CheckDomainMX(probe, serverIP)
+	return matched, probe, status
 }
 
 // ==================== Email ====================

@@ -19,13 +19,15 @@ type Account struct {
 }
 
 type Domain struct {
-	ID          int        `json:"id"`
-	Domain      string     `json:"domain"`
-	Hostname    string     `json:"hostname"`
-	IsActive    bool       `json:"is_active"`
-	Status      string     `json:"status"` // active | pending | disabled
-	CreatedAt   time.Time  `json:"created_at"`
-	MxCheckedAt *time.Time `json:"mx_checked_at,omitempty"`
+	ID                    int        `json:"id"`
+	Domain                string     `json:"domain"`
+	Hostname              string     `json:"hostname"`
+	IsActive              bool       `json:"is_active"`
+	Status                string     `json:"status"` // active | pending | disabled
+	SubdomainEnabled      bool       `json:"subdomain_enabled"`
+	SubdomainRandomLength int        `json:"subdomain_random_length"`
+	CreatedAt             time.Time  `json:"created_at"`
+	MxCheckedAt           *time.Time `json:"mx_checked_at,omitempty"`
 }
 
 type DomainSummary struct {

@@ -21,8 +21,8 @@ relay_domains =
 local_transport = error:local delivery disabled
 local_recipient_maps =
 
-# 虚拟域名 catch-all
-virtual_mailbox_domains = hash:/etc/postfix/virtual_domains
+# 虚拟域名 catch-all（hash 表存精确域名；regexp 表存启用多级子域的通配规则）
+virtual_mailbox_domains = hash:/etc/postfix/virtual_domains, regexp:/etc/postfix/virtual_domains.regex
 virtual_transport = mailreceiver:
 
 # 限制

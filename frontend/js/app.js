@@ -145,8 +145,10 @@ const api = {
     deleteDomainCF: id => apiFetch(API_BASE + '/admin/domains/' + id + '/cf', { method: 'DELETE' }),
     toggleDomain:  (id, active) => apiFetch(API_BASE + '/admin/domains/' + id + '/toggle', { method: 'PUT', body: JSON.stringify({ active }) }),
     updateDomainHostname: (id, hostname) => apiFetch(API_BASE + '/admin/domains/' + id + '/hostname', { method: 'PUT', body: JSON.stringify({ hostname }) }),
+    updateDomainSubdomain: (id, body) => apiFetch(API_BASE + '/admin/domains/' + id + '/subdomain', { method: 'PUT', body: JSON.stringify(body) }),
     batchToggleDomains: (ids, active) => apiFetch(API_BASE + '/admin/domains/batch/toggle', { method: 'PUT', body: JSON.stringify({ ids, active }) }),
     batchDeleteDomains: (ids, delete_cloudflare) => apiFetch(API_BASE + '/admin/domains/batch/delete', { method: 'PUT', body: JSON.stringify({ ids, delete_cloudflare }) }),
+    batchToggleDomainsSubdomain: (ids, enabled) => apiFetch(API_BASE + '/admin/domains/batch/subdomain', { method: 'PUT', body: JSON.stringify({ ids, enabled }) }),
     cfCreateDomain: body => apiFetch(API_BASE + '/admin/domains/cf-create', { method: 'POST', body: JSON.stringify(body) }),
     getSettings:    () => apiFetch(API_BASE + '/admin/settings'),
     saveSettings: body => apiFetch(API_BASE + '/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
@@ -1048,11 +1050,12 @@ window.createMailbox = async function() {
   const overlay = el('div', 'modal-overlay');
 
   const domainOptions = activeDomains.map(d =>
-    `<option value="${escHtml(d.domain)}">${escHtml(d.domain)}</option>`
+    `<option value="${escHtml(d.domain)}" data-sub-enabled="${d.subdomain_enabled ? '1' : '0'}" data-sub-len="${Number(d.subdomain_random_length || 5)}">${escHtml(d.domain)}${d.subdomain_enabled ? ' ✦' : ''}</option>`
   ).join('');
+  const anySubdomainDomain = activeDomains.some(d => d.subdomain_enabled);
 
   overlay.innerHTML = `
-    <div class="modal" style="max-width:420px">
+    <div class="modal" style="max-width:460px">
       <div class="modal-title">+ 新建临时邮箱</div>
       <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
       <div class="form-group" style="margin-top:0.8rem">
@@ -1063,10 +1066,43 @@ window.createMailbox = async function() {
       <div class="form-group">
         <label class="form-label">域名</label>
         <select class="form-input" id="mb-domain">
-          <option value="">随机选取</option>
+          <option value="" data-sub-enabled="${anySubdomainDomain ? '1' : '0'}" data-sub-len="5">随机选取</option>
           ${domainOptions}
         </select>
+        <div class="form-hint">${anySubdomainDomain ? '带 ✦ 的域名支持多级子域名' : ''}</div>
       </div>
+
+      <div id="mb-sub-section" style="display:none;border:1px dashed var(--border-color,#d1d5db);border-radius:6px;padding:0.7rem 0.85rem;margin-bottom:0.8rem">
+        <div class="toggle-wrap" style="margin-bottom:0.4rem">
+          <label class="toggle">
+            <input type="checkbox" id="mb-sub-toggle">
+            <span class="toggle-slider"></span>
+          </label>
+          <div>
+            <div class="toggle-label">使用多级子域名</div>
+            <span class="toggle-desc" style="font-size:0.74rem">生成形如 <code>local@xxx.domain</code> 的地址</span>
+          </div>
+        </div>
+        <div id="mb-sub-detail" style="display:none">
+          <div class="form-group" style="margin-bottom:0.4rem">
+            <label class="form-label" style="font-size:0.78rem">子域模式</label>
+            <select class="form-input" id="mb-sub-mode">
+              <option value="random">随机生成</option>
+              <option value="custom">自定义</option>
+            </select>
+          </div>
+          <div class="form-group" id="mb-sub-len-wrap" style="margin-bottom:0.4rem">
+            <label class="form-label" style="font-size:0.78rem">随机长度（2–8）</label>
+            <input class="form-input" id="mb-sub-length" type="number" min="2" max="8" value="5" />
+          </div>
+          <div class="form-group" id="mb-sub-custom-wrap" style="display:none;margin-bottom:0.2rem">
+            <label class="form-label" style="font-size:0.78rem">子域字符串</label>
+            <input class="form-input" id="mb-sub-value" placeholder="abc12" maxlength="8" />
+            <div class="form-hint">仅允许 2–8 位 a–z 0–9</div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()">取消</button>
         <button class="btn btn-primary" id="mb-confirm-btn">创建</button>
@@ -1076,6 +1112,45 @@ window.createMailbox = async function() {
   document.body.appendChild(overlay);
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
+  const domainSel = overlay.querySelector('#mb-domain');
+  const subSection = overlay.querySelector('#mb-sub-section');
+  const subToggle = overlay.querySelector('#mb-sub-toggle');
+  const subDetail = overlay.querySelector('#mb-sub-detail');
+  const subMode = overlay.querySelector('#mb-sub-mode');
+  const subLenWrap = overlay.querySelector('#mb-sub-len-wrap');
+  const subLen = overlay.querySelector('#mb-sub-length');
+  const subCustomWrap = overlay.querySelector('#mb-sub-custom-wrap');
+
+  function refreshSubSection() {
+    const opt = domainSel.options[domainSel.selectedIndex];
+    const enabled = opt && opt.dataset.subEnabled === '1';
+    const defaultLen = Number(opt?.dataset.subLen || 5);
+    if (enabled) {
+      subSection.style.display = '';
+      subLen.value = String(Math.max(2, Math.min(8, defaultLen)));
+    } else {
+      subSection.style.display = 'none';
+      subToggle.checked = false;
+      subDetail.style.display = 'none';
+    }
+  }
+  function refreshSubDetail() {
+    subDetail.style.display = subToggle.checked ? '' : 'none';
+    if (!subToggle.checked) return;
+    if (subMode.value === 'custom') {
+      subLenWrap.style.display = 'none';
+      subCustomWrap.style.display = '';
+    } else {
+      subLenWrap.style.display = '';
+      subCustomWrap.style.display = 'none';
+    }
+  }
+  domainSel.addEventListener('change', refreshSubSection);
+  subToggle.addEventListener('change', refreshSubDetail);
+  subMode.addEventListener('change', refreshSubDetail);
+  refreshSubSection();
+  refreshSubDetail();
+
   // 回车确认
   overlay.querySelector('#mb-address').addEventListener('keydown', e => {
     if (e.key === 'Enter') overlay.querySelector('#mb-confirm-btn').click();
@@ -1084,16 +1159,39 @@ window.createMailbox = async function() {
   overlay.querySelector('#mb-confirm-btn').addEventListener('click', async () => {
     const btn     = overlay.querySelector('#mb-confirm-btn');
     const address = overlay.querySelector('#mb-address').value.trim();
-    const domain  = overlay.querySelector('#mb-domain').value;
+    const domain  = domainSel.value;
     btn.disabled  = true;
     btn.textContent = '创建中...';
     try {
       const body = {};
       if (address) body.address = address;
       if (domain)  body.domain  = domain;
-      const mb = await api.createMailbox(body);
+      if (subSection.style.display !== 'none' && subToggle.checked) {
+        const mode = subMode.value;
+        body.subdomain_mode = mode;
+        if (mode === 'custom') {
+          const sub = (overlay.querySelector('#mb-sub-value')?.value || '').trim().toLowerCase();
+          if (!/^[a-z0-9]{2,8}$/.test(sub)) {
+            btn.disabled = false; btn.textContent = '创建';
+            toast('子域格式无效（仅 2–8 位 a–z 0–9）', 'warn');
+            return;
+          }
+          body.subdomain = sub;
+        } else {
+          const n = Number(subLen.value);
+          if (Number.isFinite(n) && n >= 2 && n <= 8) body.subdomain_length = n;
+        }
+      } else if (subSection.style.display !== 'none') {
+        body.subdomain_mode = 'off';
+      }
+      const resp = await apiFetch(API_BASE + '/mailboxes', { method: 'POST', body: JSON.stringify(body) });
+      const mb = resp.mailbox || resp;
       overlay.remove();
-      toast(`已创建：${mb.full_address}`, 'success');
+      const tag = resp.format_version === 'v2' ? ' (v2)' : '';
+      toast(`已创建：${mb.full_address}${tag}`, 'success');
+      if (resp.fallback_reason) {
+        toast('已回退至 v1：该域名未启用多级子域', 'warn');
+      }
       navigate('dashboard');
     } catch(e) {
       btn.disabled = false;
@@ -1406,8 +1504,17 @@ async function renderDomainsGuide(container) {
                       ${buildDataLabel('内容', `<span style="font-family:monospace">v=spf1 ip4:${ipLabel} ~all</span>`)}
                       ${buildDataLabel('优先级', '—')}
                     </tr>
+                    <tr style="background:rgba(34,197,94,.06)">
+                      ${buildDataLabel('类型', 'MX')}
+                      ${buildDataLabel('主机名', '<span style="font-family:monospace">*</span>')}
+                      ${buildDataLabel('内容', `<span style="font-family:monospace">${mxTarget}</span>`)}
+                      ${buildDataLabel('优先级', '10')}
+                    </tr>
                   </tbody>
                 </table>
+                <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem">
+                  ✦ 末行为<strong>通配 MX</strong>：仅在希望启用「多级子域名」（如 <code>xxx@aa.bb.cc.dd</code>）时需要；纯顶级邮箱可省略。
+                </div>
               </div>
             </div>
             <div class="guide-step">
@@ -1532,7 +1639,10 @@ async function renderAdminDomains(container) {
     `;
   }
 
-  const payload = await api.domainsPayload();
+  const [payload, settings] = await Promise.all([
+    api.domainsPayload(),
+    api.admin.getSettings().catch(() => ({})),
+  ]);
   const domains = Array.isArray(payload) ? payload : (payload.domains || []);
   const summary = payload.summary || {
     total: domains.length,
@@ -1554,6 +1664,12 @@ async function renderAdminDomains(container) {
   const regular = filtered.filter(d => d.status !== 'pending');
   const selectedIds = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]);
 
+  const apiSubEnabled = settings.api_subdomain_enabled === 'true' || settings.api_subdomain_enabled === true;
+  const apiSubLength = Number(settings.api_subdomain_length || 5);
+  const apiDomainStrategy = settings.api_domain_strategy || 'random';
+  const apiDomainFixed = settings.api_domain_fixed || '';
+  const activeForFixed = domains.filter(d => d.is_active);
+
   container.innerHTML = `
     <div class="admin-domain-page" style="max-width:1120px;display:flex;flex-direction:column;gap:1rem">
       <div class="card">
@@ -1562,6 +1678,47 @@ async function renderAdminDomains(container) {
           <div><div style="font-size:1.2rem;font-weight:700">${summary.active || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Active</div></div>
           <div><div style="font-size:1.2rem;font-weight:700">${summary.pending || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Pending</div></div>
           <div><div style="font-size:1.2rem;font-weight:700">${summary.disabled || 0}</div><div style="font-size:0.78rem;color:var(--text-muted)">Disabled</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="border:1px solid rgba(34,197,94,.32);box-shadow:0 10px 28px rgba(34,197,94,.08)">
+        <div class="card-header">
+          <div class="card-title">⚙ API 创建邮箱默认配置</div>
+          <div style="font-size:0.82rem;color:var(--text-muted)">客户端调用 <code>POST /api/mailboxes</code> 未显式传 <code>subdomain_mode</code>/<code>domain</code> 时使用。请求里的字段始终优先。</div>
+        </div>
+        <div class="card-body" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.8rem">
+          <div class="toggle-wrap" style="margin:0">
+            <label class="toggle">
+              <input type="checkbox" id="api-sub-enabled" ${apiSubEnabled ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+            <div>
+              <div class="toggle-label">默认启用多级子域名</div>
+              <span class="toggle-desc" style="font-size:0.74rem">仅作用于已开启 <code>subdomain_enabled</code> 的域名；未开启的域名静默回退 v1。</span>
+            </div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">默认子域随机长度（2–8）</label>
+            <input class="form-input" id="api-sub-length" type="number" min="2" max="8" value="${apiSubLength}" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">域名选择策略</label>
+            <select class="form-input" id="api-domain-strategy">
+              <option value="random" ${apiDomainStrategy === 'random' ? 'selected' : ''}>随机选用已激活域名</option>
+              <option value="fixed" ${apiDomainStrategy === 'fixed' ? 'selected' : ''}>指定固定域名</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0" id="api-domain-fixed-wrap" ${apiDomainStrategy === 'fixed' ? '' : 'hidden'}>
+            <label class="form-label">指定的域名</label>
+            <select class="form-input" id="api-domain-fixed">
+              <option value="">— 选择一个 —</option>
+              ${activeForFixed.map(d => `<option value="${escHtml(d.domain)}" ${apiDomainFixed === d.domain ? 'selected' : ''}>${escHtml(d.domain)}${d.subdomain_enabled ? ' ✦' : ''}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="card-body" style="padding-top:0;display:flex;gap:0.5rem;align-items:center">
+          <button class="btn btn-primary btn-sm" onclick="saveApiMailboxDefaults()">✓ 保存配置</button>
+          <span style="font-size:0.78rem;color:var(--text-muted)">回退规则：API 请求要求 v2，但所选域名未启用，自动回退 v1（响应里有 <code>fallback_reason</code>）。</span>
         </div>
       </div>
 
@@ -1581,13 +1738,15 @@ async function renderAdminDomains(container) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">批量操作区</div>
-          <div style="font-size:0.82rem;color:var(--text-muted)">先勾选域名，再使用这里的批量启用 / 停用 / 删除入口。</div>
+          <div style="font-size:0.82rem;color:var(--text-muted)">先勾选域名，再使用这里的批量启用 / 停用 / 删除 / 子域入口。</div>
         </div>
         <div class="card-body" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
           <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(true)">全选当前结果</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(false)">清空选择</button>
           <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(true)">批量启用</button>
           <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(false)">批量停用</button>
+          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomainSubdomain(true)" title="批量为选中域名打开子域开关">✦ 批量启用子域</button>
+          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomainSubdomain(false)">关闭子域</button>
           <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(false)">批量删除本地</button>
           <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(true)">批量删除并删 CF</button>
           <span style="font-size:0.78rem;color:var(--text-muted)">已选 ${selectedIds.length} 个，当前结果 ${filtered.length} 个</span>
@@ -1627,18 +1786,22 @@ async function renderAdminDomains(container) {
           </div>
           <div class="table-wrap">
             <table class="admin-table stack-table">
-              <thead><tr><th></th><th>域名</th><th>Hostname</th><th>上次检测</th><th>操作</th></tr></thead>
+              <thead><tr><th></th><th>域名</th><th>Hostname</th><th>子域</th><th>上次检测</th><th>操作</th></tr></thead>
               <tbody id="pending-domains-tbody">
                 ${pending.map(d => `
                   <tr id="pending-row-${d.id}">
                     ${buildDataLabel('选择', `<input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" />`)}
                     ${buildDataLabel('域名', `<span style="font-family:var(--font-mono)">${escHtml(d.domain)}</span>`)}
                     ${buildDataLabel('Hostname', `<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</span>`)}
+                    ${buildDataLabel('子域', d.subdomain_enabled
+                      ? `<span class="badge badge-green">✦ 开 / ${Number(d.subdomain_random_length || 5)}</span>`
+                      : '<span class="badge badge-gray">关</span>')}
                     ${buildDataLabel('上次检测', d.mx_checked_at ? timeAgo(d.mx_checked_at) : '从未', 'style="font-size:0.78rem"')}
                     ${buildDataLabel('操作', `
                       <div class="table-actions">
                         <span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span>
                         <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainSubdomainModal(${d.id},'${escHtml(d.domain)}',${d.subdomain_enabled ? 'true' : 'false'},${Number(d.subdomain_random_length || 5)})">Subdomain</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">✕</button>
                       </div>
@@ -1658,20 +1821,24 @@ async function renderAdminDomains(container) {
         </div>
         <div class="table-wrap">
           <table class="admin-table stack-table">
-            <thead><tr><th></th><th>域名</th><th>Hostname</th><th>状态</th><th>操作</th></tr></thead>
+            <thead><tr><th></th><th>域名</th><th>Hostname</th><th>子域</th><th>状态</th><th>操作</th></tr></thead>
             <tbody>
-              ${regular.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">暂无域名</td></tr>` :
+              ${regular.length === 0 ? `<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">暂无域名</td></tr>` :
                 regular.map(d => `
                   <tr>
                     ${buildDataLabel('选择', `<input type="checkbox" ${state.adminDomainSelection[d.id] ? 'checked' : ''} onchange="toggleAdminDomainSelection(${d.id}, this.checked)" />`)}
                     ${buildDataLabel('域名', `<span style="font-family:var(--font-mono)">${escHtml(d.domain)}</span>`)}
                     ${buildDataLabel('Hostname', `<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escHtml(d.hostname || '—')}</span>`)}
+                    ${buildDataLabel('子域', d.subdomain_enabled
+                      ? `<span class="badge badge-green">✦ 开 / ${Number(d.subdomain_random_length || 5)}</span>`
+                      : '<span class="badge badge-gray">关</span>')}
                     ${buildDataLabel('状态', d.is_active
                       ? '<span class="badge badge-green">● 启用</span>'
                       : '<span class="badge badge-gray">○ 停用</span>')}
                     ${buildDataLabel('操作', `
                       <div class="table-actions">
                         <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainSubdomainModal(${d.id},'${escHtml(d.domain)}',${d.subdomain_enabled ? 'true' : 'false'},${Number(d.subdomain_random_length || 5)})">Subdomain</button>
                         <button class="btn btn-ghost btn-sm" onclick="toggleDomain(${d.id},${!d.is_active})">${d.is_active ? '停用' : '启用'}</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">删除</button>
@@ -1686,11 +1853,55 @@ async function renderAdminDomains(container) {
     </div>
   `;
 
+  // API 默认配置：策略切换时显示/隐藏固定域名字段
+  const stratSel = container.querySelector('#api-domain-strategy');
+  const fixedWrap = container.querySelector('#api-domain-fixed-wrap');
+  if (stratSel && fixedWrap) {
+    stratSel.addEventListener('change', () => {
+      if (stratSel.value === 'fixed') fixedWrap.removeAttribute('hidden');
+      else fixedWrap.setAttribute('hidden', '');
+    });
+  }
+
   // 如果有 pending 域名，开始轮询
   if (pending.length > 0) {
     startPendingDomainPoller(pending.map(d => d.id));
   }
 }
+
+window.saveApiMailboxDefaults = async function() {
+  const enabled = !!document.getElementById('api-sub-enabled')?.checked;
+  const lenRaw = Number(document.getElementById('api-sub-length')?.value);
+  const length = Number.isFinite(lenRaw) ? Math.max(2, Math.min(8, Math.floor(lenRaw))) : 5;
+  const strategy = document.getElementById('api-domain-strategy')?.value || 'random';
+  let fixed = (document.getElementById('api-domain-fixed')?.value || '').trim();
+  if (strategy !== 'fixed') fixed = '';
+  if (strategy === 'fixed' && !fixed) {
+    toast('请选择指定的域名', 'warn');
+    return;
+  }
+  try {
+    await api.admin.saveSettings({
+      api_subdomain_enabled: enabled ? 'true' : 'false',
+      api_subdomain_length: String(length),
+      api_domain_strategy: strategy,
+      api_domain_fixed: fixed,
+    });
+    toast('API 默认配置已保存', 'success');
+  } catch(e) {
+    toast('保存失败：' + e.message, 'error');
+  }
+};
+
+window.batchToggleDomainSubdomain = async function(enabled) {
+  const ids = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]).map(Number);
+  if (!ids.length) return;
+  try {
+    await api.admin.batchToggleDomainsSubdomain(ids, !!enabled);
+    toast(enabled ? '已批量启用子域' : '已批量关闭子域', 'success');
+    navigate('admin-domains');
+  } catch(e) { toast('批量操作失败: ' + e.message, 'error'); }
+};
 
 window.adminDomainSetFilter = function(kind, value) {
   if (kind === 'query') state.adminDomainQuery = value;
@@ -1747,6 +1958,16 @@ window.showAddDomainModal = function() {
           <input class="form-input" id="add-hostname-inp" placeholder="mail.example.com" />
           <div class="form-hint">留空时回退系统级 smtp_hostname；若也为空则使用 mail.&lt;domain&gt;</div>
         </div>
+        <div class="toggle-wrap" style="margin:0.4rem 0 0.6rem">
+          <label class="toggle">
+            <input type="checkbox" id="add-subdomain-enabled">
+            <span class="toggle-slider"></span>
+          </label>
+          <div>
+            <div class="toggle-label">启用多级子域名</div>
+            <span class="toggle-desc" style="font-size:0.74rem">勾选后 DNS 提示将增加通配 <code>*</code> MX 记录；CF 创建时会同步建通配 MX。</span>
+          </div>
+        </div>
         <div id="add-dns-hint" style="background:var(--bg-secondary);border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.8rem;font-size:0.8rem">
           <b>需要配置的 DNS 记录：</b>
           <table style="margin-top:0.5rem;width:100%;border-collapse:collapse;font-size:0.76rem">
@@ -1770,9 +1991,11 @@ window.showAddDomainModal = function() {
 
   const inp = overlay.querySelector('#add-domain-inp');
   const hostnameInp = overlay.querySelector('#add-hostname-inp');
+  const subEnabledInp = overlay.querySelector('#add-subdomain-enabled');
   inp?.addEventListener('keydown', e => { if (e.key === 'Enter') window.doAddDomainCheck(false); });
   inp?.addEventListener('input', updateDnsHint);
   hostnameInp?.addEventListener('input', updateDnsHint);
+  subEnabledInp?.addEventListener('change', updateDnsHint);
 
   function updateDnsHint() {
     const d = (inp?.value || '').trim() || 'example.com';
@@ -1780,12 +2003,14 @@ window.showAddDomainModal = function() {
     const customHostname = (hostnameInp?.value || '').trim();
     const hn = customHostname || serverHostname || 'mail.' + d;
     const hasHostname = !!(customHostname || serverHostname);
+    const subEnabled = !!subEnabledInp?.checked;
     const tbody = document.getElementById('add-dns-rows');
     if (!tbody) return;
     tbody.innerHTML = `
       <tr><td style="padding:2px 5px">MX</td><td style="padding:2px 5px;font-family:monospace">@</td><td style="padding:2px 5px;font-family:monospace">${escHtml(hn)}</td><td style="padding:2px 5px">10</td></tr>
       ${hasHostname ? '' : `<tr><td style="padding:2px 5px">A</td><td style="padding:2px 5px;font-family:monospace">mail.${escHtml(d)}</td><td style="padding:2px 5px;font-family:monospace">${escHtml(ip)}</td><td style="padding:2px 5px">—</td></tr>`}
       <tr><td style="padding:2px 5px">TXT</td><td style="padding:2px 5px;font-family:monospace">@</td><td style="padding:2px 5px;font-family:monospace">v=spf1 ip4:${escHtml(ip)} ~all</td><td style="padding:2px 5px">—</td></tr>
+      ${subEnabled ? `<tr style="background:rgba(34,197,94,.06)"><td style="padding:2px 5px">MX</td><td style="padding:2px 5px;font-family:monospace">*</td><td style="padding:2px 5px;font-family:monospace">${escHtml(hn)}</td><td style="padding:2px 5px">10</td></tr>` : ''}
     `;
   }
   updateDnsHint();
@@ -1793,6 +2018,7 @@ window.showAddDomainModal = function() {
   window.doAddDomainCheck = async function(force) {
     const domain = (inp?.value || '').trim().toLowerCase();
     const hostname = (hostnameInp?.value || '').trim();
+    const subEnabled = !!subEnabledInp?.checked;
     if (!domain) { toast('请输入域名', 'warn'); return; }
     const checkBtn = document.getElementById('add-check-btn');
     const forceBtn = document.getElementById('add-force-btn');
@@ -1802,7 +2028,7 @@ window.showAddDomainModal = function() {
     try {
       if (force) {
         // 强制直接添加（跳过 MX 检测）
-        const body = { domain };
+        const body = { domain, subdomain_enabled: subEnabled };
         if (hostname) body.hostname = hostname;
         const r = await api.admin.addDomain(body);
         showDnsInstructions(domain, r);
@@ -1813,7 +2039,7 @@ window.showAddDomainModal = function() {
       // 先做 MX 检测（force:false）
       let r;
       try {
-        const body = { domain, force: false };
+        const body = { domain, force: false, subdomain_enabled: subEnabled };
         if (hostname) body.hostname = hostname;
         r = await api.admin.mxImport(body);
         // MX 通过 → 已添加
@@ -1937,6 +2163,40 @@ window.showEditDomainHostnameModal = function(id, domain, hostname) {
   });
 };
 
+window.showEditDomainSubdomainModal = function(id, domain, enabled, length) {
+  const len = Math.max(2, Math.min(8, Number(length) || 5));
+  showModal('编辑多级子域名', `
+    <div class="form-group">
+      <label class="form-label">域名</label>
+      <input class="form-input" value="${escHtml(domain)}" disabled />
+    </div>
+    <div class="toggle-wrap" style="margin:0.4rem 0">
+      <label class="toggle">
+        <input type="checkbox" id="edit-sub-enabled" ${enabled ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
+      <div>
+        <div class="toggle-label">启用多级子域名</div>
+        <span class="toggle-desc" style="font-size:0.74rem">开启后，需要在该域名 DNS 中配置 <code>*.${escHtml(domain)}</code> 通配 MX 记录。</span>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">随机子域长度（2–8）</label>
+      <input class="form-input" id="edit-sub-length" type="number" min="2" max="8" value="${len}" />
+      <div class="form-hint">用户/API 未显式指定长度时使用</div>
+    </div>
+  `, async () => {
+    const enabledNew = !!document.getElementById('edit-sub-enabled')?.checked;
+    const rawLen = Number(document.getElementById('edit-sub-length')?.value);
+    const lenNew = Number.isFinite(rawLen) ? Math.max(2, Math.min(8, Math.floor(rawLen))) : len;
+    try {
+      await api.admin.updateDomainSubdomain(id, { enabled: enabledNew, random_length: lenNew });
+      toast('子域设置已更新', 'success');
+      navigate('admin-domains');
+    } catch(e) { toast('更新失败: ' + e.message, 'error'); return false; }
+  });
+};
+
 window.batchToggleDomains = async function(active) {
   const ids = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]).map(Number);
   if (!ids.length) return;
@@ -1985,6 +2245,16 @@ window.showCFCreateModal = function() {
         <label class="form-label">Cloudflare Zone（可选）</label>
         <input class="form-input" id="cfc-zone" placeholder="example.com" />
       </div>
+      <div class="toggle-wrap" style="margin:0.4rem 0">
+        <label class="toggle">
+          <input type="checkbox" id="cfc-subdomain-enabled">
+          <span class="toggle-slider"></span>
+        </label>
+        <div>
+          <div class="toggle-label">同时启用多级子域名</div>
+          <span class="toggle-desc" style="font-size:0.74rem">勾选后将额外为该域名创建通配 <code>*</code> MX 记录，并在数据库标记 <code>subdomain_enabled</code>。</span>
+        </div>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()">取消</button>
         <button class="btn btn-primary" id="cfc-submit">创建</button>
@@ -1998,14 +2268,15 @@ window.showCFCreateModal = function() {
     const domain = (overlay.querySelector('#cfc-domain')?.value || '').trim().toLowerCase();
     const hostname = (overlay.querySelector('#cfc-hostname')?.value || '').trim();
     const zone = (overlay.querySelector('#cfc-zone')?.value || '').trim();
+    const subEnabled = !!overlay.querySelector('#cfc-subdomain-enabled')?.checked;
     if (!domain || !hostname) { toast('请填写域名和 Hostname', 'warn'); return; }
     btn.disabled = true;
     btn.textContent = '创建中...';
     try {
-      const body = { domain, hostname };
+      const body = { domain, hostname, subdomain_enabled: subEnabled };
       if (zone) body.zone = zone;
       await api.admin.cfCreateDomain(body);
-      toast('Cloudflare MX 已创建，域名已入池', 'success');
+      toast(subEnabled ? 'Cloudflare MX（含通配）已创建，域名已入池' : 'Cloudflare MX 已创建，域名已入池', 'success');
       overlay.remove();
       navigate('admin-domains');
     } catch(e) {
