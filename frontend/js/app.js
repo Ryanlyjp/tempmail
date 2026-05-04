@@ -612,7 +612,7 @@ async function renderPage(page) {
 
 // ─── Dashboard（三栏：邮箱列表 | 邮件列表 | 邮件正文） ──────────────
 const PAGE_SIZE = 20;
-const MAILBOX_PAGE_SIZE = 7;
+const MAILBOX_PAGE_SIZE = 6;
 const MAILBOX_FOLDER_TEMP = 'temp';
 const MAILBOX_FOLDER_FAVORITES = 'favorites';
 const dashState = {
