@@ -109,10 +109,13 @@ func main() {
 		api.GET("/mailboxes", mailboxH.List)
 		api.DELETE("/mailboxes/:id", mailboxH.Delete)
 		api.PUT("/mailboxes/:id/favorite", mailboxH.Favorite)
+		api.PUT("/mailboxes/:id/forward", mailboxH.Forward)
 
 		// 邮件管理
 		api.GET("/mailboxes/:id/emails", emailH.List)
 		api.GET("/mailboxes/:id/emails/:email_id", emailH.Get)
+		api.POST("/mailboxes/:id/emails/:email_id/forward/tg", emailH.ForwardTelegram)
+		api.GET("/mailboxes/:id/emails/:email_id/attachments/:attachment_id", emailH.DownloadAttachment)
 		api.GET("/mailboxes/:id/otp/latest", emailH.LatestOTP)
 		api.DELETE("/mailboxes/:id/emails/:email_id", emailH.Delete)
 		// 管理员路由
@@ -140,6 +143,7 @@ func main() {
 			// 系统设置管理
 			admin.GET("/settings", settingH.AdminGetAll)
 			admin.PUT("/settings", settingH.AdminUpdate)
+			admin.POST("/settings/tg/test", settingH.AdminTestTelegram)
 		}
 	}
 
@@ -259,6 +263,8 @@ func main() {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
+
+			go forwardMailboxEmail(db, *mailbox, *email)
 
 			c.JSON(http.StatusOK, gin.H{"status": "delivered", "email_id": email.ID})
 		})

@@ -52,6 +52,7 @@ CREATE TABLE mailboxes (
     domain_id    INT          NOT NULL REFERENCES domains(id),
     full_address VARCHAR(320) NOT NULL,  -- 完整地址 "abc123@mail.xxx.xyz"
     is_favorite  BOOLEAN      NOT NULL DEFAULT FALSE,
+    tg_forward_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     expires_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW() + INTERVAL '30 minutes'
 );
@@ -117,6 +118,10 @@ INSERT INTO app_settings (key, value) VALUES ('api_subdomain_length', '5') ON CO
 INSERT INTO app_settings (key, value) VALUES ('api_domain_strategy', 'random') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('api_domain_fixed', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('api_mailbox_ttl_minutes', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tg_bot_token', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tg_chat_id', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tg_message_thread_id', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tg_forward_mode', 'all_with_attachments') ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- 7. 数据库性能参数（在 postgresql.conf 或 docker 环境变量中设置更佳）

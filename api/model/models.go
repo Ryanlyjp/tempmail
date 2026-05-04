@@ -47,26 +47,36 @@ type Stats struct {
 }
 
 type Mailbox struct {
-	ID          uuid.UUID `json:"id"`
-	AccountID   uuid.UUID `json:"account_id"`
-	Address     string    `json:"address"`
-	DomainID    int       `json:"domain_id"`
-	FullAddress string    `json:"full_address"`
-	IsFavorite  bool      `json:"is_favorite"`
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	ID               uuid.UUID `json:"id"`
+	AccountID        uuid.UUID `json:"account_id"`
+	Address          string    `json:"address"`
+	DomainID         int       `json:"domain_id"`
+	FullAddress      string    `json:"full_address"`
+	IsFavorite       bool      `json:"is_favorite"`
+	TGForwardEnabled bool      `json:"tg_forward_enabled"`
+	CreatedAt        time.Time `json:"created_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
 }
 
 type Email struct {
-	ID         uuid.UUID `json:"id"`
-	MailboxID  uuid.UUID `json:"mailbox_id"`
-	Sender     string    `json:"sender"`
-	Subject    string    `json:"subject"`
-	BodyText   string    `json:"body_text"`
-	BodyHTML   string    `json:"body_html"`
-	RawMessage string    `json:"raw_message,omitempty"`
-	SizeBytes  int       `json:"size_bytes"`
-	ReceivedAt time.Time `json:"received_at"`
+	ID          uuid.UUID    `json:"id"`
+	MailboxID   uuid.UUID    `json:"mailbox_id"`
+	Sender      string       `json:"sender"`
+	Subject     string       `json:"subject"`
+	BodyText    string       `json:"body_text"`
+	BodyHTML    string       `json:"body_html"`
+	RawMessage  string       `json:"raw_message,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	SizeBytes   int          `json:"size_bytes"`
+	ReceivedAt  time.Time    `json:"received_at"`
+}
+
+type Attachment struct {
+	ID          int    `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	SizeBytes   int    `json:"size_bytes"`
+	Inline      bool   `json:"inline"`
 }
 
 // ==================== 请求/响应 ====================

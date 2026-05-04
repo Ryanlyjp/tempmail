@@ -191,8 +191,12 @@ func (h *MailboxHandler) List(c *gin.Context) {
 	account := middleware.GetAccount(c)
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
-	if page < 1 { page = 1 }
-	if size < 1 || size > 100 { size = 20 }
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
 
 	mailboxes, total, err := h.store.ListMailboxes(c.Request.Context(), account.ID, page, size)
 	if err != nil {
@@ -238,6 +242,32 @@ func (h *MailboxHandler) Favorite(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{"mailbox": mailbox})
+}
+
+// PUT /api/mailboxes/:id/forward - 设置/取消 TG 转发
+func (h *MailboxHandler) Forward(c *gin.Context) {
+	account := middleware.GetAccount(c)
+	id, err := parseUUID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mailbox id"})
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	mailbox, err := h.store.SetMailboxTGForward(c.Request.Context(), id, account.ID, req.Enabled)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"mailbox": mailbox})
 }
 

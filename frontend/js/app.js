@@ -64,6 +64,13 @@ function formatDate(s) {
   return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1).replace(/\.0$/, '')} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
+}
+
 function timeAgo(s) {
   if (!s) return '—';
   const diff = Date.now() - new Date(s).getTime();
@@ -82,6 +89,114 @@ async function copyText(text) {
   } catch {
     toast('复制失败，请手动选择', 'warn');
   }
+}
+
+function parseContentDispositionFilename(header) {
+  if (!header) return '';
+  const utfMatch = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utfMatch) {
+    try { return decodeURIComponent(utfMatch[1]); } catch (_) { return utfMatch[1]; }
+  }
+  const quotedMatch = header.match(/filename\s*=\s*"([^"]+)"/i);
+  if (quotedMatch) return quotedMatch[1];
+  const plainMatch = header.match(/filename\s*=\s*([^;]+)/i);
+  return plainMatch ? plainMatch[1].trim() : '';
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || 'attachment';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildEmailAttachments(mailboxId, emailId, attachments) {
+  const items = Array.isArray(attachments) ? attachments : [];
+  if (!items.length) return '';
+  return `
+    <div class="email-attachments">
+      <div class="email-attachments-head">
+        <span class="email-attachments-title">附件 ${items.length}</span>
+        <span class="email-attachments-hint">点击下载</span>
+      </div>
+      <div class="email-attachments-list">
+        ${items.map(att => `
+          <div class="attachment-item">
+            <div class="attachment-main">
+              <div class="attachment-name" title="${escHtml(att.filename || ('attachment-' + att.id))}">${escHtml(att.filename || ('attachment-' + att.id))}</div>
+              <div class="attachment-meta">
+                <span>${formatBytes(att.size_bytes || 0)}</span>
+                <span>${escHtml(att.content_type || 'application/octet-stream')}</span>
+                ${att.inline ? '<span class="attachment-badge">内联</span>' : ''}
+              </div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="downloadEmailAttachment('${mailboxId}','${emailId}',${Number(att.id) || 0})">下载</button>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function isMailboxForwardEnabled(mailbox) {
+  return !!mailbox?.tg_forward_enabled;
+}
+
+function buildMailboxForwardBadge(mailbox) {
+  return isMailboxForwardEnabled(mailbox) ? '<span class="mailbox-forward-badge">✈ TG 转发</span>' : '';
+}
+
+function buildMailboxForwardButton(mailbox, stopPropagation = false) {
+  const enabled = isMailboxForwardEnabled(mailbox);
+  const clickPrefix = stopPropagation ? 'event.stopPropagation();' : '';
+  const btnClass = enabled ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  const next = enabled ? 'false' : 'true';
+  const title = enabled ? '关闭 Telegram 转发' : '开启 Telegram 转发';
+  return `<button class="${btnClass}" onclick="${clickPrefix}toggleMailboxForward('${mailbox.id}',${next})" title="${title}">✈ ${enabled ? '开' : '关'}</button>`;
+}
+
+function syncMailboxState(updated) {
+  if (!updated || !updated.id) return;
+  if (Array.isArray(dashState?.mailboxes)) {
+    dashState.mailboxes = dashState.mailboxes.map(mb => mb.id === updated.id ? updated : mb);
+  }
+  if (Array.isArray(state.mailboxes)) {
+    state.mailboxes = state.mailboxes.map(mb => mb.id === updated.id ? updated : mb);
+  }
+  if (dashState?.selectedMailbox?.id === updated.id) {
+    dashState.selectedMailbox = updated;
+  }
+  if (state.currentMailbox?.id === updated.id) {
+    state.currentMailbox = { ...state.currentMailbox, ...updated };
+  }
+}
+
+function buildDashboardMailboxHeaderActions(mailbox) {
+  const mbIsFav = !!mailbox.is_favorite;
+  const mbFavIcon = mbIsFav ? '★' : '☆';
+  const mbFavTitle = mbIsFav ? '取消收藏' : '收藏（防过期）';
+  return `
+    ${buildMailboxForwardButton(mailbox)}
+    <button class="btn btn-ghost btn-sm" onclick="toggleFavorite('${mailbox.id}',${!mbIsFav})" title="${mbFavTitle}">${mbFavIcon}</button>
+    <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mailbox.full_address)}')" title="复制地址">⎘</button>
+    <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
+    <button class="btn btn-danger btn-sm" onclick="confirmDeleteMailbox('${mailbox.id}','${escHtml(mailbox.full_address)}')" title="删除邮箱">✕</button>
+  `;
+}
+
+function renderInboxTopbarActions(mailbox) {
+  const actions = $('topbar-actions');
+  if (!actions || !mailbox) return;
+  actions.innerHTML = `
+    ${buildMailboxForwardButton(mailbox)}
+    <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mailbox.full_address)}')" style="margin-left:0.4rem">⎘ 复制地址</button>
+    <button class="btn btn-primary btn-sm" onclick="refreshInbox()" style="margin-left:0.4rem">↻ 刷新</button>
+    <button class="btn btn-ghost btn-sm" onclick="navigate('dashboard')" style="margin-left:0.4rem">← 返回</button>
+  `;
 }
 
 // ─── API 客户端 ─────────────────────────────────────────────
@@ -124,6 +239,10 @@ const api = {
   })),
   listMailboxes:   () => api.listMailboxesPage().then(d => d.data),
   deleteMailbox: id  => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
+  setMailboxForward: (id, enabled) => apiFetch(API_BASE + '/mailboxes/' + id + '/forward', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled: !!enabled }),
+  }).then(d => d.mailbox || d),
   latestOTP:      id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp/latest').then(d => d.otp || d),
   // 邮件 → 解包 {data:[...]}
   listEmailsPage: (mid, page = 1, size = 20) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails?page=' + page + '&size=' + size).then(d => ({
@@ -134,6 +253,21 @@ const api = {
   })),
   listEmails: mid    => api.listEmailsPage(mid).then(d => d.data),
   getEmail:   (mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid).then(d => d.email || d),
+  forwardEmailToTG: (mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid + '/forward/tg', { method: 'POST' }),
+  downloadEmailAttachment: async (mid, eid, aid) => {
+    const headers = {};
+    if (state.apiKey) headers['Authorization'] = `Bearer ${state.apiKey}`;
+    const res = await fetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid + '/attachments/' + aid, { headers });
+    if (!res.ok) {
+      let data = {};
+      try { data = await res.json(); } catch (_) {}
+      throw new Error(data.error || data.message || `HTTP ${res.status}`);
+    }
+    return {
+      blob: await res.blob(),
+      filename: parseContentDispositionFilename(res.headers.get('Content-Disposition')),
+    };
+  },
   deleteEmail:(mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid, { method: 'DELETE' }),
   // 管理
   admin: {
@@ -152,6 +286,7 @@ const api = {
     cfCreateDomain: body => apiFetch(API_BASE + '/admin/domains/cf-create', { method: 'POST', body: JSON.stringify(body) }),
     getSettings:    () => apiFetch(API_BASE + '/admin/settings'),
     saveSettings: body => apiFetch(API_BASE + '/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    testTelegram: () => apiFetch(API_BASE + '/admin/settings/tg/test', { method: 'POST' }),
     mxImport:    body => apiFetch(API_BASE + '/admin/domains/mx-import', { method: 'POST', body: JSON.stringify(body) }),
     mxRegister:  body => apiFetch(API_BASE + '/admin/domains/mx-register', { method: 'POST', body: JSON.stringify(body) }),
     getDomainStatus: id => apiFetch(API_BASE + '/admin/domains/' + id + '/status'),
@@ -628,6 +763,7 @@ function buildMailboxCard(mb) {
   const expiresAt = mb.expires_at ? new Date(mb.expires_at) : null;
   const now = new Date();
   const isFav = !!mb.is_favorite;
+  const forwardBadge = buildMailboxForwardBadge(mb);
   let expiryHtml = '';
   if (isFav) {
     expiryHtml = '<span class="mailbox-fav-badge">★ 已收藏</span>';
@@ -646,13 +782,17 @@ function buildMailboxCard(mb) {
   const favTitle = isFav ? '取消收藏' : '收藏（防过期）';
   return `
     <div class="mailbox-card${isSelected ? ' is-selected' : ''}${isFav ? ' is-favorite' : ''}" onclick="dashSelectMailbox('${mb.id}')">
-      <div class="mailbox-address">${escHtml(mb.full_address)}</div>
+      <div class="mailbox-address-row">
+        <div class="mailbox-address">${escHtml(mb.full_address)}</div>
+        ${forwardBadge}
+      </div>
       <div class="mailbox-stats" style="display:flex;gap:0.7rem;align-items:center;flex-wrap:wrap">
         <span style="font-size:0.75rem;color:var(--text-muted)">创建于 ${formatDate(mb.created_at)}</span>
         ${expiryHtml}
       </div>
       <div class="mailbox-actions">
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();extractAndCopyCode('${mb.id}','${escHtml(mb.full_address)}')" title="提取最新邮件验证码">🔢 取码</button>
+        ${buildMailboxForwardButton(mb, true)}
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();toggleFavorite('${mb.id}',${!isFav})" title="${favTitle}">${favIcon}</button>
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();copyText('${escHtml(mb.full_address)}')" title="复制地址">⎘</button>
         <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();confirmDeleteMailbox('${mb.id}','${escHtml(mb.full_address)}')" title="删除">✕</button>
@@ -693,8 +833,6 @@ async function paneRenderEmails() {
   }
 
   const mbIsFav = !!mb.is_favorite;
-  const mbFavIcon = mbIsFav ? '★' : '☆';
-  const mbFavTitle = mbIsFav ? '取消收藏' : '收藏（防过期）';
   pane.innerHTML = `
     <div class="pane-header">
       <div class="pane-header-main">
@@ -702,10 +840,7 @@ async function paneRenderEmails() {
         <span class="pane-title" title="${escHtml(mb.full_address)}">${escHtml(mb.full_address)}</span>
       </div>
       <div class="pane-header-actions">
-        <button class="btn btn-ghost btn-sm" onclick="toggleFavorite('${mb.id}',${!mbIsFav})" title="${mbFavTitle}">${mbFavIcon}</button>
-        <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mb.full_address)}')" title="复制地址">⎘</button>
-        <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteMailbox('${mb.id}','${escHtml(mb.full_address)}')" title="删除邮箱">✕</button>
+        ${buildDashboardMailboxHeaderActions(mb)}
       </div>
     </div>
     <div class="pane-scroll" id="pane-emails-scroll"><div style="padding:1rem;text-align:center"><span class="spinner"></span></div></div>
@@ -796,6 +931,7 @@ async function paneRenderEmailView() {
   const htmlBody = e.body_html || e.html_body || '';
   const textBody = e.body_text || e.text_body || '';
   const subject = e.subject || '(无主题)';
+  const attachments = Array.isArray(e.attachments) ? e.attachments : [];
 
   // 顶部 header 改为带操作按钮
   pane.querySelector('.pane-header').innerHTML = `
@@ -804,6 +940,7 @@ async function paneRenderEmailView() {
       <span class="pane-title" title="${escHtml(subject)}">${escHtml(subject)}</span>
     </div>
     <div class="pane-header-actions">
+      <button class="btn btn-ghost btn-sm" onclick="forwardEmailToTelegram('${mb.id}','${eid}')" title="手动转发该邮件到 Telegram">✈ TG</button>
       <button class="btn btn-ghost btn-sm" onclick="dashExtractCodeFromEmail('${mb.id}','${eid}')" title="从该邮件提取验证码">🔢 取码</button>
       <button class="btn btn-danger btn-sm" onclick="dashDeleteEmail('${mb.id}','${eid}')" title="删除该邮件">✕</button>
     </div>
@@ -818,8 +955,10 @@ async function paneRenderEmailView() {
         <span>收件人：<strong>${escHtml(toAddr)}</strong></span>
         <span style="margin:0 0.3rem">·</span>
         <span>${formatDate(e.received_at)}</span>
+        ${attachments.length ? `<span style="margin:0 0.3rem">·</span><span>附件 ${attachments.length}</span>` : ''}
       </div>
     </div>
+    ${buildEmailAttachments(mb.id, eid, attachments)}
     ${htmlBody
       ? `<iframe class="email-body-frame" id="email-frame-pane" sandbox="allow-same-origin allow-popups"></iframe>`
       : `<div class="email-body-text" style="white-space:pre-wrap;padding:0.8rem 1rem">${escHtml(textBody || '(邮件内容为空)')}</div>`
@@ -853,6 +992,25 @@ window.dashDeleteEmail = async function(mid, eid) {
     paneRenderEmails();
     paneRenderEmailView();
   } catch (err) { toast('删除失败：' + err.message, 'error'); }
+};
+
+window.downloadEmailAttachment = async function(mid, eid, attachmentId) {
+  try {
+    const result = await api.downloadEmailAttachment(mid, eid, attachmentId);
+    triggerBlobDownload(result.blob, result.filename || `attachment-${attachmentId}`);
+  } catch (err) {
+    toast('附件下载失败：' + err.message, 'error');
+  }
+};
+
+window.forwardEmailToTelegram = async function(mid, eid) {
+  try {
+    const res = await api.forwardEmailToTG(mid, eid);
+    const count = Number(res.attachments_sent) || 0;
+    toast(count > 0 ? `已转发到 TG（含 ${count} 个附件）` : '已转发到 TG', 'success');
+  } catch (err) {
+    toast('转发到 TG 失败：' + err.message, 'error');
+  }
 };
 
 window.dashChangePage = async function(kind, delta) {
@@ -951,27 +1109,26 @@ window.toggleFavorite = async function(id, fav) {
       body: JSON.stringify({ favorite: !!fav }),
     });
     const updated = res.mailbox || res;
-    // 在本地数组里就地更新，避免整页重拉
-    const idx = dashState.mailboxes.findIndex(m => m.id === id);
-    if (idx >= 0) dashState.mailboxes[idx] = updated;
-    if (dashState.selectedMailbox?.id === id) {
-      dashState.selectedMailbox = updated;
-      // 同步刷新中栏 header（不重拉邮件，避免闪烁）
-      const headerActions = document.querySelector('#pane-emails .pane-header-actions');
-      if (headerActions) {
-        const newFav = !!updated.is_favorite;
-        headerActions.innerHTML = `
-          <button class="btn btn-ghost btn-sm" onclick="toggleFavorite('${updated.id}',${!newFav})" title="${newFav ? '取消收藏' : '收藏（防过期）'}">${newFav ? '★' : '☆'}</button>
-          <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(updated.full_address)}')" title="复制地址">⎘</button>
-          <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
-          <button class="btn btn-danger btn-sm" onclick="confirmDeleteMailbox('${updated.id}','${escHtml(updated.full_address)}')" title="删除邮箱">✕</button>
-        `;
-      }
-    }
+    syncMailboxState(updated);
     paneRenderMailboxes();
+    if (state.page === 'dashboard') paneRenderEmails();
+    if (state.page === 'inbox') renderInboxTopbarActions(updated);
     toast(fav ? '已收藏（不会被自动清理）' : '已取消收藏', 'success');
   } catch (e) {
     toast('操作失败：' + e.message, 'error');
+  }
+};
+
+window.toggleMailboxForward = async function(id, enabled) {
+  try {
+    const updated = await api.setMailboxForward(id, enabled);
+    syncMailboxState(updated);
+    paneRenderMailboxes();
+    if (state.page === 'dashboard') paneRenderEmails();
+    if (state.page === 'inbox') renderInboxTopbarActions(updated);
+    toast(enabled ? 'TG 转发已开启' : 'TG 转发已关闭', 'success');
+  } catch (e) {
+    toast('TG 转发设置失败：' + e.message, 'error');
   }
 };
 
@@ -1052,7 +1209,7 @@ window.dashExtractCodeFromEmail = async function(mailboxID, emailID) {
 };
 
 window.openInbox = function(id, addr) {
-  state.currentMailbox = { id, full_address: addr };
+  state.currentMailbox = state.mailboxes.find(mb => mb.id === id) || { id, full_address: addr };
   navigate('inbox');
 };
 
@@ -1272,14 +1429,7 @@ async function renderInbox(container) {
 
   const title = $('topbar-title'); if (title) title.textContent = mb.full_address;
   const sub   = $('topbar-subtitle'); if (sub) sub.textContent = '邮件列表';
-  const actions = $('topbar-actions');
-  if (actions) {
-    actions.innerHTML = `
-      <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mb.full_address)}')">⎘ 复制地址</button>
-      <button class="btn btn-primary btn-sm" onclick="refreshInbox()" style="margin-left:0.4rem">↻ 刷新</button>
-      <button class="btn btn-ghost btn-sm" onclick="navigate('dashboard')" style="margin-left:0.4rem">← 返回</button>
-    `;
-  }
+  renderInboxTopbarActions(mb);
 
   const emails = await api.listEmails(mb.id);
   state.emails = emails || [];
@@ -1378,6 +1528,7 @@ async function renderEmailView(container) {
   if (actions) {
     actions.innerHTML = `
       <button class="btn btn-ghost btn-sm" onclick="navigate('inbox')">← 返回列表</button>
+      <button class="btn btn-ghost btn-sm" onclick="forwardEmailToTelegram('${mb.id}','${eid}')" style="margin-left:0.4rem">✈ TG 转发</button>
       <button class="btn btn-danger btn-sm" onclick="deleteEmail('${mb.id}','${eid}');navigate('inbox')" style="margin-left:0.4rem">删除</button>
     `;
   }
@@ -1387,6 +1538,7 @@ async function renderEmailView(container) {
   const toAddr   = mb.full_address || state.currentMailbox?.full_address || '—';
   const htmlBody  = e.body_html || e.html_body || '';
   const textBody  = e.body_text || e.text_body || '';
+  const attachments = Array.isArray(e.attachments) ? e.attachments : [];
   const title = $('topbar-title'); if (title) title.textContent = e.subject || '(无主题)';
   const sub   = $('topbar-subtitle'); if (sub) sub.textContent = `来自：${fromAddr}`;
 
@@ -1401,8 +1553,10 @@ async function renderEmailView(container) {
           <span>收件人：<strong>${escHtml(toAddr)}</strong></span>
           <span style="margin:0 0.3rem">·</span>
           <span>${formatDate(e.received_at)}</span>
+          ${attachments.length ? `<span style="margin:0 0.3rem">·</span><span>附件 ${attachments.length}</span>` : ''}
         </div>
       </div>
+      ${buildEmailAttachments(mb.id, eid, attachments)}
       ${htmlBody
         ? `<iframe class="email-body-frame" id="email-frame" sandbox="allow-same-origin allow-popups"></iframe>`
         : `<div class="email-body-text" style="white-space:pre-wrap">${escHtml(textBody || '(邮件内容为空)')}</div>`
@@ -2332,6 +2486,10 @@ async function renderAdminSettings(container) {
   const cfApiToken = settings.cf_api_token || '';
   const announce   = settings.announcement          || '';
   const maxMb      = settings.max_mailboxes_per_user|| '5';
+  const tgBotToken = settings.tg_bot_token || '';
+  const tgChatId = settings.tg_chat_id || '';
+  const tgThreadId = settings.tg_message_thread_id || '';
+  const tgForwardMode = settings.tg_forward_mode || 'all_with_attachments';
 
   function inputRow(id, label, value, hint, placeholder = '', settingKey = '') {
     const key = settingKey || id.replace(/^input-/, '').replace(/-/g, '_');
@@ -2340,6 +2498,21 @@ async function renderAdminSettings(container) {
         <label class="form-label">${label}</label>
         <div style="display:flex;gap:0.5rem">
           <input class="form-input" id="${id}" value="${escHtml(value)}" placeholder="${escHtml(placeholder)}" style="flex:1" />
+          <button class="btn btn-primary btn-sm" onclick="saveSetting('${id}','${key}')">✓ 保存</button>
+        </div>
+        ${hint ? `<div class="form-hint">${hint}</div>` : ''}
+      </div>`;
+  }
+
+  function selectRow(id, label, value, options, hint, settingKey = '') {
+    const key = settingKey || id.replace(/^input-/, '').replace(/-/g, '_');
+    return `
+      <div class="form-group">
+        <label class="form-label">${label}</label>
+        <div style="display:flex;gap:0.5rem">
+          <select class="form-input" id="${id}" style="flex:1">
+            ${options.map(opt => `<option value="${escHtml(opt.value)}" ${opt.value === value ? 'selected' : ''}>${escHtml(opt.label)}</option>`).join('')}
+          </select>
           <button class="btn btn-primary btn-sm" onclick="saveSetting('${id}','${key}')">✓ 保存</button>
         </div>
         ${hint ? `<div class="form-hint">${hint}</div>` : ''}
@@ -2423,6 +2596,39 @@ async function renderAdminSettings(container) {
         </div>
         <div class="divider"></div>
 
+        <div class="form-group">
+          <label class="form-label">Telegram Bot Token</label>
+          <div style="display:flex;gap:0.5rem">
+            <input class="form-input" id="input-tg-bot-token" type="password" value="${escHtml(tgBotToken)}" placeholder="123456:ABC..." style="flex:1" />
+            <button class="btn btn-primary btn-sm" onclick="saveSetting('input-tg-bot-token','tg_bot_token')">✓ 保存</button>
+          </div>
+          <div class="form-hint">用于将收件通知转发到 Telegram Bot。</div>
+        </div>
+        <div class="divider"></div>
+
+        ${inputRow('input-tg-chat-id', 'Telegram Chat ID', tgChatId, '用户、群组或频道 ID，例如 <code>123456789</code> 或 <code>-1001234567890</code>。', '123456789', 'tg_chat_id')}
+        <div class="divider"></div>
+
+        ${inputRow('input-tg-thread-id', 'Telegram Topic / Thread ID', tgThreadId, '可选。群组开启话题时可指定发送到某个 topic。留空则发到默认会话。', '留空可选', 'tg_message_thread_id')}
+        <div class="divider"></div>
+
+        ${selectRow('input-tg-forward-mode', 'Telegram 转发模式', tgForwardMode, [
+          { value: 'all_with_attachments', label: '全量转发（带附件）' },
+          { value: 'all_without_attachments', label: '全量转发（不带附件）' },
+          { value: 'attachments_only', label: '仅转发带附件邮件（带附件）' },
+          { value: 'notify_attachments', label: '仅通知有带附件邮件' },
+        ], '每个邮箱可单独开启或关闭 TG 转发；这里控制全局发送策略。', 'tg_forward_mode')}
+        <div class="divider"></div>
+
+        <div class="form-group">
+          <label class="form-label">Telegram 测试</label>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="testTelegramForward()">发送测试消息</button>
+            <span class="form-hint" style="margin:0">请先保存上面的 Token、Chat ID 和模式设置。</span>
+          </div>
+        </div>
+        <div class="divider"></div>
+
         <!-- 每用户邮箱上限 -->
         ${inputRow('input-max-mailboxes-per-user', '每账户邮箱上限', maxMb, '每个账户同时存在的邮箱数量上限', '5')}
         <div class="divider"></div>
@@ -2486,6 +2692,15 @@ window.saveCatchAllSetting = async function(enabled) {
     toast('保存失败: ' + e.message, 'error');
     const cb = $('toggle-catchall');
     if (cb) cb.checked = !enabled;
+  }
+};
+
+window.testTelegramForward = async function() {
+  try {
+    await api.admin.testTelegram();
+    toast('TG 测试消息已发送，请到 Telegram 查看', 'success');
+  } catch (e) {
+    toast('TG 测试失败：' + e.message, 'error');
   }
 };
 

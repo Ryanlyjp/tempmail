@@ -98,6 +98,8 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			ON domains (status) WHERE status = 'pending'`,
 		`ALTER TABLE mailboxes
 			ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE mailboxes
+			ADD COLUMN IF NOT EXISTS tg_forward_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_mailboxes_favorite
 			ON mailboxes (is_favorite) WHERE is_favorite = TRUE`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '')
@@ -127,6 +129,14 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 		`INSERT INTO app_settings (key, value) VALUES ('api_domain_fixed', '')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('api_mailbox_ttl_minutes', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tg_bot_token', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tg_chat_id', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tg_message_thread_id', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tg_forward_mode', 'all_with_attachments')
 			ON CONFLICT (key) DO NOTHING`,
 	}
 
@@ -553,9 +563,9 @@ func (s *Store) CreateMailbox(ctx context.Context, accountID uuid.UUID, address 
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO mailboxes (account_id, address, domain_id, full_address, expires_at)
 		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at`,
 		accountID, address, domainID, fullAddress, expiresAt,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -575,9 +585,9 @@ func (s *Store) EnsureCatchAllMailbox(ctx context.Context, accountID uuid.UUID, 
 		`INSERT INTO mailboxes (account_id, address, domain_id, full_address, expires_at)
 		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (full_address) DO UPDATE SET full_address = EXCLUDED.full_address
-		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at`,
 		accountID, address, domainID, fullAddress, expiresAt,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -595,18 +605,32 @@ func (s *Store) SetMailboxFavorite(ctx context.Context, mailboxID uuid.UUID, acc
 		err = s.pool.QueryRow(ctx,
 			`UPDATE mailboxes SET is_favorite = TRUE
 			 WHERE id = $1 AND account_id = $2
-			 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+			 RETURNING id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at`,
 			mailboxID, accountID,
-		).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+		).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	} else {
 		newExpire := time.Now().Add(time.Duration(ttlMinutes) * time.Minute)
 		err = s.pool.QueryRow(ctx,
 			`UPDATE mailboxes SET is_favorite = FALSE, expires_at = $3
 			 WHERE id = $1 AND account_id = $2
-			 RETURNING id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at`,
+			 RETURNING id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at`,
 			mailboxID, accountID, newExpire,
-		).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+		).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (s *Store) SetMailboxTGForward(ctx context.Context, mailboxID uuid.UUID, accountID uuid.UUID, enabled bool) (*model.Mailbox, error) {
+	var m model.Mailbox
+	err := s.pool.QueryRow(ctx,
+		`UPDATE mailboxes SET tg_forward_enabled = $3
+		 WHERE id = $1 AND account_id = $2
+		 RETURNING id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at`,
+		mailboxID, accountID, enabled,
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -645,7 +669,7 @@ func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, si
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at
 		 FROM mailboxes WHERE account_id = $1
 		 ORDER BY is_favorite DESC, created_at DESC LIMIT $2 OFFSET $3`,
 		accountID, size, (page-1)*size,
@@ -665,10 +689,10 @@ func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, si
 func (s *Store) GetMailbox(ctx context.Context, mailboxID uuid.UUID, accountID uuid.UUID) (*model.Mailbox, error) {
 	var m model.Mailbox
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at
 		 FROM mailboxes WHERE id = $1 AND account_id = $2`,
 		mailboxID, accountID,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -690,10 +714,10 @@ func (s *Store) DeleteMailbox(ctx context.Context, mailboxID uuid.UUID, accountI
 func (s *Store) GetMailboxByFullAddress(ctx context.Context, fullAddress string) (*model.Mailbox, error) {
 	var m model.Mailbox
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, is_favorite, created_at, expires_at
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at
 		 FROM mailboxes WHERE full_address = $1`,
 		strings.ToLower(fullAddress),
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.CreatedAt, &m.ExpiresAt)
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
