@@ -650,8 +650,8 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   display: grid;
   grid-template-columns: 300px 360px minmax(0, 1fr);
   gap: 0.9rem;
-  height: calc(100dvh - 196px);
-  min-height: 520px;
+  height: calc(100dvh - 176px);
+  min-height: 560px;
   padding-bottom: env(safe-area-inset-bottom);
 }
 .pane {

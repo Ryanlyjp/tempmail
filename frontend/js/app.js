@@ -231,13 +231,16 @@ const api = {
   getDomainStatus: id => apiFetch(API_BASE + '/domains/' + id + '/status'),
   // 邮箱 → 解包 {data:[...]}
   createMailbox:   (body) => apiFetch(API_BASE + '/mailboxes', { method: 'POST', body: JSON.stringify(body || {}) }).then(d => d.mailbox || d),
-  listMailboxesPage: (page = 1, size = 20) => apiFetch(API_BASE + '/mailboxes?page=' + page + '&size=' + size).then(d => ({
-    data: Array.isArray(d) ? d : (d.data || []),
-    total: d.total ?? (Array.isArray(d) ? d.length : 0),
-    page: d.page ?? page,
-    size: d.size ?? size,
-  })),
-  listMailboxes:   () => api.listMailboxesPage().then(d => d.data),
+  listMailboxesPage: (page = 1, size = 20, folder = 'all') => {
+    const folderParam = folder ? '&folder=' + encodeURIComponent(folder) : '';
+    return apiFetch(API_BASE + '/mailboxes?page=' + page + '&size=' + size + folderParam).then(d => ({
+      data: Array.isArray(d) ? d : (d.data || []),
+      total: d.total ?? (Array.isArray(d) ? d.length : 0),
+      page: d.page ?? page,
+      size: d.size ?? size,
+    }));
+  },
+  listMailboxes:   (folder = 'all') => api.listMailboxesPage(1, 20, folder).then(d => d.data),
   deleteMailbox: id  => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
   setMailboxForward: (id, enabled) => apiFetch(API_BASE + '/mailboxes/' + id + '/forward', {
     method: 'PUT',
@@ -610,6 +613,8 @@ async function renderPage(page) {
 // ─── Dashboard（三栏：邮箱列表 | 邮件列表 | 邮件正文） ──────────────
 const PAGE_SIZE = 20;
 const MAILBOX_PAGE_SIZE = 7;
+const MAILBOX_FOLDER_TEMP = 'temp';
+const MAILBOX_FOLDER_FAVORITES = 'favorites';
 const dashState = {
   mailboxes: [],
   mailboxTotal: 0,
@@ -617,6 +622,7 @@ const dashState = {
   emailTotal: 0,
   selectedMailbox: null, // {id, full_address, is_favorite, expires_at, ...}
   selectedEmailId: null,
+  mailboxFolder: MAILBOX_FOLDER_TEMP,
   mailboxPage: 1,
   emailPage: 1,
   mobileView: 'mailboxes',
@@ -651,6 +657,62 @@ window.dashSetMobileView = function(view) {
   setMobileView(view);
 };
 
+function normalizeMailboxFolder(folder) {
+  return folder === MAILBOX_FOLDER_FAVORITES ? MAILBOX_FOLDER_FAVORITES : MAILBOX_FOLDER_TEMP;
+}
+
+function getMailboxFolderMeta(folder = dashState.mailboxFolder) {
+  const current = normalizeMailboxFolder(folder);
+  if (current === MAILBOX_FOLDER_FAVORITES) {
+    return {
+      key: MAILBOX_FOLDER_FAVORITES,
+      icon: '★',
+      title: '收藏夹',
+      stripLabel: '收藏邮箱',
+      switchLabel: '📬 临时箱',
+      switchFolder: MAILBOX_FOLDER_TEMP,
+      emptyIcon: '★',
+      emptyTitle: '收藏夹还是空的',
+      emptyHint: '点邮箱卡片上的 ☆ 之后，会永久保留在这里',
+    };
+  }
+  return {
+    key: MAILBOX_FOLDER_TEMP,
+    icon: '📬',
+    title: '临时邮箱',
+    stripLabel: '临时邮箱',
+    switchLabel: '★ 收藏夹',
+    switchFolder: MAILBOX_FOLDER_FAVORITES,
+    emptyIcon: '✉',
+    emptyTitle: '还没有临时邮箱',
+    emptyHint: '点击「+ 新建」创建第一个',
+  };
+}
+
+async function loadMailboxPage(targetPage = dashState.mailboxPage) {
+  const folder = normalizeMailboxFolder(dashState.mailboxFolder);
+  let page = Math.max(1, Number(targetPage) || 1);
+  let resp = await api.listMailboxesPage(page, MAILBOX_PAGE_SIZE, folder);
+  const total = resp?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / MAILBOX_PAGE_SIZE));
+  if (page > totalPages) {
+    page = totalPages;
+    resp = await api.listMailboxesPage(page, MAILBOX_PAGE_SIZE, folder);
+  }
+  dashState.mailboxFolder = folder;
+  dashState.mailboxPage = page;
+  applyMailboxPage(resp);
+  return resp;
+}
+
+async function refreshDashboardMailboxes(targetPage = dashState.mailboxPage) {
+  await loadMailboxPage(targetPage);
+  paneRenderMailboxes();
+  paneRenderEmailView();
+  startEmailListPoller();
+  await paneRenderEmails();
+}
+
 function applyMailboxPage(resp) {
   const rows = resp?.data || [];
   const prevSelectedID = dashState.selectedMailbox?.id || null;
@@ -671,13 +733,12 @@ function applyMailboxPage(resp) {
 
 async function renderDashboard(container) {
   const isAdmin = state.account?.is_admin;
-  const [mailboxesResp, domains, statsData, publicSettings] = await Promise.all([
-    api.listMailboxesPage(dashState.mailboxPage, MAILBOX_PAGE_SIZE),
+  const [_, domains, statsData, publicSettings] = await Promise.all([
+    loadMailboxPage(dashState.mailboxPage),
     api.domains(),
     api.stats().catch(() => null),
     api.publicSettings().catch(() => ({})),
   ]);
-  applyMailboxPage(mailboxesResp);
 
   // 顶栏按钮
   const actions = $('topbar-actions');
@@ -696,8 +757,9 @@ async function renderDashboard(container) {
   const announcement = publicSettings.announcement || '';
 
   // 顶部窄统计条（替代原 4-6 张大卡片）
+  const folderMeta = getMailboxFolderMeta();
   const stripItems = [
-    { label: '我的邮箱', value: dashState.mailboxTotal },
+    { label: folderMeta.stripLabel, value: dashState.mailboxTotal },
     { label: '可用域名', value: activeDomains },
     { label: '邮件总数', value: st.total_emails ?? '—' },
     { label: '邮箱总量', value: st.total_mailboxes ?? '—' },
@@ -735,6 +797,7 @@ async function renderDashboard(container) {
 function paneRenderMailboxes() {
   const pane = $('pane-mailboxes');
   if (!pane) return;
+  const folderMeta = getMailboxFolderMeta();
   const total = dashState.mailboxTotal;
   const totalPages = Math.max(1, Math.ceil(total / MAILBOX_PAGE_SIZE));
   if (dashState.mailboxPage > totalPages) dashState.mailboxPage = totalPages;
@@ -743,15 +806,16 @@ function paneRenderMailboxes() {
   pane.innerHTML = `
     <div class="pane-header">
       <div class="pane-header-main">
-        <span class="pane-title">📬 我的邮箱 (${total})</span>
+        <span class="pane-title">${folderMeta.icon} ${folderMeta.title} (${total})</span>
       </div>
       <div class="pane-header-actions">
+        <button class="btn btn-ghost btn-sm" onclick="dashToggleMailboxFolder('${folderMeta.switchFolder}')" title="切换邮箱分组">${folderMeta.switchLabel}</button>
         <button class="btn btn-primary btn-sm" onclick="createMailbox()">+ 新建</button>
       </div>
     </div>
     <div class="pane-scroll">
       ${total === 0
-        ? `<div class="empty-state"><span class="empty-icon">✉</span><p>还没有邮箱</p><p style="font-size:0.78rem;color:var(--text-muted)">点击「+ 新建」创建第一个</p></div>`
+        ? `<div class="empty-state"><span class="empty-icon">${folderMeta.emptyIcon}</span><p>${folderMeta.emptyTitle}</p><p style="font-size:0.78rem;color:var(--text-muted)">${folderMeta.emptyHint}</p></div>`
         : rows.map(mb => buildMailboxCard(mb)).join('')
       }
     </div>
@@ -815,6 +879,14 @@ window.dashSelectMailbox = function(id) {
   paneRenderEmails();
   paneRenderEmailView();
   startEmailListPoller();
+};
+
+window.dashToggleMailboxFolder = async function(folder) {
+  const nextFolder = normalizeMailboxFolder(folder);
+  if (nextFolder === dashState.mailboxFolder) return;
+  dashState.mailboxFolder = nextFolder;
+  dashState.mailboxPage = 1;
+  await refreshDashboardMailboxes(1);
 };
 
 async function paneRenderEmails() {
@@ -1017,12 +1089,7 @@ window.dashSetPage = async function(kind, targetPage) {
   if (kind === 'mailbox') {
     const totalPages = Math.max(1, Math.ceil((dashState.mailboxTotal || 0) / MAILBOX_PAGE_SIZE));
     dashState.mailboxPage = Math.min(totalPages, Math.max(1, Number(targetPage) || 1));
-    const resp = await api.listMailboxesPage(dashState.mailboxPage, MAILBOX_PAGE_SIZE);
-    applyMailboxPage(resp);
-    paneRenderMailboxes();
-    paneRenderEmailView();
-    startEmailListPoller();
-    await paneRenderEmails();
+    await refreshDashboardMailboxes(dashState.mailboxPage);
     return;
   }
 
@@ -1127,8 +1194,9 @@ window.toggleFavorite = async function(id, fav) {
     });
     const updated = res.mailbox || res;
     syncMailboxState(updated);
-    paneRenderMailboxes();
-    if (state.page === 'dashboard') paneRenderEmails();
+    if (state.page === 'dashboard') {
+      await refreshDashboardMailboxes(dashState.mailboxPage);
+    }
     if (state.page === 'inbox') renderInboxTopbarActions(updated);
     toast(fav ? '已收藏（不会被自动清理）' : '已取消收藏', 'success');
   } catch (e) {
@@ -1385,6 +1453,8 @@ window.createMailbox = async function() {
       if (resp.fallback_reason) {
         toast('已回退至 v1：该域名未启用多级子域', 'warn');
       }
+      dashState.mailboxFolder = MAILBOX_FOLDER_TEMP;
+      dashState.mailboxPage = 1;
       navigate('dashboard');
     } catch(e) {
       btn.disabled = false;

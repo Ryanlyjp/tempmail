@@ -191,6 +191,12 @@ func (h *MailboxHandler) List(c *gin.Context) {
 	account := middleware.GetAccount(c)
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	folder := strings.ToLower(strings.TrimSpace(c.DefaultQuery("folder", "all")))
+	switch folder {
+	case "temp", "favorites", "all":
+	default:
+		folder = "all"
+	}
 	if page < 1 {
 		page = 1
 	}
@@ -198,17 +204,18 @@ func (h *MailboxHandler) List(c *gin.Context) {
 		size = 20
 	}
 
-	mailboxes, total, err := h.store.ListMailboxes(c.Request.Context(), account.ID, page, size)
+	mailboxes, total, err := h.store.ListMailboxes(c.Request.Context(), account.ID, page, size, folder)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"data":  mailboxes,
-		"total": total,
-		"page":  page,
-		"size":  size,
+		"folder": folder,
+		"data":   mailboxes,
+		"total":  total,
+		"page":   page,
+		"size":   size,
 	})
 }
 

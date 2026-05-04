@@ -660,18 +660,40 @@ func (s *Store) GetCatchAllAccountID(ctx context.Context) (uuid.UUID, error) {
 	return id, err
 }
 
-func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, size int) ([]model.Mailbox, int, error) {
+func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, size int, folder string) ([]model.Mailbox, int, error) {
+	folder = strings.ToLower(strings.TrimSpace(folder))
+	where := `account_id = $1`
+	orderBy := `is_favorite DESC, created_at DESC`
+	switch folder {
+	case "temp":
+		where += ` AND is_favorite = FALSE`
+		orderBy = `created_at DESC`
+	case "favorites":
+		where += ` AND is_favorite = TRUE`
+		orderBy = `created_at DESC`
+	default:
+		folder = "all"
+	}
+
 	var total int
 	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM mailboxes WHERE account_id = $1`, accountID).Scan(&total)
+		fmt.Sprintf(`SELECT COUNT(*) FROM mailboxes WHERE %s`, where),
+		accountID,
+	).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at
-		 FROM mailboxes WHERE account_id = $1
-		 ORDER BY is_favorite DESC, created_at DESC LIMIT $2 OFFSET $3`,
+		fmt.Sprintf(
+			`SELECT id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at
+			 FROM mailboxes
+			 WHERE %s
+			 ORDER BY %s
+			 LIMIT $2 OFFSET $3`,
+			where,
+			orderBy,
+		),
 		accountID, size, (page-1)*size,
 	)
 	if err != nil {

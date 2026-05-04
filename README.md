@@ -1,66 +1,48 @@
 # TempMail
 
-一个自托管临时邮件平台，基于 `PostgreSQL + PgBouncer + Redis + Go API + Nginx + Postfix`。当前版本已经明显偏离原始项目，重点能力包括：
-
-- catch-all 自动建箱
-- 收藏邮箱防过期
-- 三栏式邮箱总览 UI
-- 域名 MX 自动验证与健康巡检
-- 每域名可选 `hostname`
-- Cloudflare MX 自动创建 / 删除
-- 域名批量管理、筛选与状态统计
-- 最新一封邮件 OTP 提取 API
+一个自托管临时邮箱平台，当前版本基于 `PostgreSQL + PgBouncer + Redis + Go API + Nginx + Postfix`，并在原始项目基础上扩展了收藏夹、附件解析下载、Telegram 转发、域名批量管理、多级子域名建箱等能力。
 
 ---
 
-## 功能概览
+## 当前能力
 
-| 功能 | 说明 |
-|------|------|
-| 临时邮箱 | 创建临时邮箱，默认 TTL 30 分钟，自动清理 |
-| Catch-all | 已托管域名下的未知地址可自动建箱并落到指定账号 |
-| 收藏邮箱 | 收藏后不参与过期清理，取消收藏后恢复 TTL |
-| 三栏 Dashboard | 左栏邮箱、中栏邮件列表、右栏邮件正文，支持快速取码 |
-| OTP 提取 | 前端一键取码，后端提供最新邮件 OTP API |
-| 多域名池 | 可指定域名建箱，也可随机选取激活域名 |
-| 域名验证 | 提交域名后后台每 30 秒轮询 MX，通过即自动激活 |
-| 域名巡检 | 每 6 小时重检激活域名，MX 失效会自动停用 |
-| 每域名 Hostname | 域名可单独指定 `hostname`，为空时回退全局 `smtp_hostname` |
-| Cloudflare 集成 | 管理员可通过 API / 后台自动创建、删除 MX 记录 |
-| 域名增强管理 | 支持筛选、状态统计、批量启用/停用/删除 |
-| API Key 鉴权 | 使用 `Authorization: Bearer <API_KEY>`，也兼容 `?api_key=` |
-| 管理后台 | 管理账户、域名、系统设置、公告、Cloudflare Token |
-| 高并发架构 | Redis 限流 + PgBouncer 事务池 + Go API |
+- 临时邮箱默认按 TTL 自动过期清理
+- 收藏邮箱单独进入“收藏夹”，不会被自动清理
+- 左栏邮箱分页显示，临时箱 / 收藏夹分开展示
+- 三栏 Dashboard：邮箱列表 / 邮件列表 / 邮件正文
+- 现有邮件支持补解析附件，不新增附件内容入库
+- 网页端可直接下载附件
+- 支持提取最新一封邮件 OTP
+- 支持每个邮箱独立开启/关闭 Telegram 转发
+- 支持 Telegram 全局转发策略、测试消息、手动转发已有邮件
+- 支持仅转发带附件邮件、仅通知带附件邮件
+- TG 文本会标明来自哪个邮箱
+- 支持 catch-all 自动建箱
+- 支持多级子域名邮箱创建
+- 支持域名 MX 自动验证、健康巡检、批量启停/删除
+- 支持 Cloudflare MX 自动创建 / 删除
 
 ---
 
-## 部署架构
-
-服务组成：
+## 架构
 
 - `postgres`: 主数据库
 - `pgbouncer`: PostgreSQL 连接池
-- `redis`: 速率限制与缓存
+- `redis`: 限流与缓存
 - `api`: Go 后端
-- `frontend`: Nginx 托管静态 SPA 并反代 API
+- `frontend`: Nginx 托管 SPA 并反代 API
 - `postfix`: SMTP 收件
 
-当前 `docker-compose.yml` 已改为本地构建镜像，源码改动会直接参与构建：
+`docker-compose.yml` 当前使用本地源码构建：
 
-- `api` → `build: ./api`
-- `postfix` → `build: ./postfix`
+- `api` -> `build: ./api`
+- `postfix` -> `build: ./postfix`
 
 ---
 
 ## 快速启动
 
-### 前置条件
-
-- Docker 20.10+
-- Docker Compose v2+
-- 可接收邮件的公网 IP
-
-### 1. 克隆并配置
+### 1. 准备环境
 
 ```bash
 git clone <repo-url>
@@ -68,7 +50,7 @@ cd tempmail
 cp .env.example .env
 ```
 
-至少填写：
+至少需要填写这些变量：
 
 ```dotenv
 POSTGRES_DB=tempmail
@@ -87,7 +69,7 @@ SMTP_HOSTNAME=mail.yourdomain.com
 REDIS_PASSWORD=change_me
 ```
 
-### 2. 启动服务
+### 2. 启动
 
 ```bash
 docker compose up -d --build
@@ -95,15 +77,13 @@ docker compose up -d --build
 
 ### 3. 获取管理员 API Key
 
-首次启动后，管理员 Key 会写入 `data/admin.key`：
+首次启动后会写入：
 
 ```bash
 cat data/admin.key
 ```
 
-### 4. 访问 Web
-
-浏览器打开：
+### 4. 访问页面
 
 ```text
 http://<服务器IP>
@@ -111,73 +91,137 @@ http://<服务器IP>
 
 ---
 
-## 核心行为
+## 邮箱行为
 
-### 1. Catch-all 自动建箱
+### 临时邮箱
 
-当 `catchall_enabled=true` 时，发往“已托管域名但未事先创建”的地址的邮件不会丢弃，而是：
+- 默认 TTL 由 `mailbox_ttl_minutes` 控制
+- 过期后由后台清理器删除
+- Web 创建的邮箱使用普通 TTL
+- 非 Web / API 创建可单独使用 `api_mailbox_ttl_minutes`
 
-1. 检查收件域名是否在本系统中且处于激活状态
-2. 按 `catchall_account_id` 或首个管理员账号归属
-3. 自动创建该邮箱
-4. 继续按正常流程落邮件
+### 收藏夹
 
-相关系统设置：
+- 收藏后的邮箱会从“临时邮箱”移动到“收藏夹”
+- 收藏夹中的邮箱永久保留，不参与过期清理
+- 取消收藏后会重新写回 `expires_at = now + mailbox_ttl_minutes`
+- 左栏默认显示临时邮箱，点击 `★ 收藏夹` 可切换视图
+- 为兼容旧调用，API 默认仍返回全部邮箱；前端通过 `folder` 参数按文件夹过滤
+
+### Catch-all 自动建箱
+
+当 `catchall_enabled=true` 时，发往已托管域名但未预创建地址的邮件会：
+
+1. 校验域名已在系统中且为激活状态
+2. 归属给 `catchall_account_id` 或第一个管理员账号
+3. 自动创建邮箱
+4. 按正常流程继续收信
+
+相关设置：
 
 - `catchall_enabled`
 - `catchall_account_id`
 - `mailbox_ttl_minutes`
 
-### 2. 收藏邮箱
+---
 
-- 收藏邮箱后不会被后台过期清理器删除
-- 取消收藏后，`expires_at` 会重置为 `now + mailbox_ttl_minutes`
+## 附件行为
 
-### 3. 每域名 Hostname
+- 附件内容不单独存数据库
+- 邮件原文仍保存在 `emails.raw_message`
+- 读取邮件详情或下载附件时，后端会实时从原始 MIME 邮件里解析附件
+- 这意味着已有老邮件也支持“补解析附件”，不需要额外迁移历史附件数据
 
-域名可单独设置 `hostname`：
+当前能力：
 
-- 若域名自身 `hostname` 非空，优先使用
-- 否则回退系统设置 `smtp_hostname`
-- 若仍为空，则回退 `mail.<domain>`
+- 邮件详情页显示附件数量与文件名
+- 点击即可下载单个附件
+- TG 手动转发已有邮件时也会重新从原始邮件解析附件
 
-这会影响：
+---
 
-- DNS 提示
-- MX 自动注册提示
-- Cloudflare MX 创建 / 删除目标
+## Telegram 转发
+
+### 配置项
+
+管理员设置页支持：
+
+- `tg_bot_token`
+- `tg_chat_id`
+- `tg_message_thread_id`
+- `tg_forward_mode`
+
+### 全局转发模式
+
+- `all_with_attachments`: 全量转发，正文 + 附件
+- `all_without_attachments`: 全量转发，仅正文
+- `attachments_only`: 仅带附件邮件才转发，且上传附件
+- `notify_attachments`: 仅带附件邮件才通知，不上传附件
+
+### 使用方式
+
+- 每个邮箱可单独开启 / 关闭 TG 转发
+- 收到新邮件时按“邮箱开关 + 全局模式”共同决定是否发送
+- 邮件正文会带上邮箱地址、发件人、主题、时间、附件数
+- 设置页可发送一条 TG 测试消息验证连通性
+- 单封已有邮件可手动补转发到 TG
+
+---
+
+## 多级子域名邮箱
+
+创建邮箱时支持：
+
+- `subdomain_mode=off`
+- `subdomain_mode=random`
+- `subdomain_mode=custom`
+
+规则：
+
+- 自定义子域仅允许 `a-z0-9`
+- 长度限制 `2-8`
+- 若目标域名未开启多级子域，会自动回退到普通邮箱地址
+
+相关配置：
+
+- `api_subdomain_enabled`
+- `api_subdomain_length`
+- `api_domain_strategy`
+- `api_domain_fixed`
 
 ---
 
 ## 域名管理
 
-### 用户侧
-
-普通登录用户可以：
+普通用户可以：
 
 - 查看共享域名池
-- 提交域名进入 MX 自动验证流程
-- 轮询域名状态
-
-### 管理员侧
+- 提交域名进入 MX 自动验证
+- 查询域名验证状态
 
 管理员还可以：
 
 - 手动添加域名
 - 强制导入域名
-- 更新单个域名 `hostname`
-- 通过 Cloudflare 自动创建 MX
-- 删除 Cloudflare MX 并删除本地域名
+- 更新每个域名的 `hostname`
 - 批量启用 / 停用 / 删除域名
+- 批量开关多级子域名
+- 通过 Cloudflare 创建 / 删除 MX
 - 按 `status` / `hostname` / 关键字筛选域名
+
+域名 `hostname` 的优先级：
+
+1. 域名自身 `hostname`
+2. 系统设置 `smtp_hostname`
+3. 默认回退 `mail.<domain>`
 
 ---
 
 ## API 使用
 
-### 认证方式
+### 认证
 
-所有受保护 API 使用：
+受保护接口使用：
 
 ```http
 Authorization: Bearer tm_xxxxxxxxxxxx
@@ -189,53 +233,80 @@ Authorization: Bearer tm_xxxxxxxxxxxx
 ?api_key=tm_xxxxxxxxxxxx
 ```
 
-### 常用接口
+示例：
 
 ```bash
 BASE="http://<服务器IP>"
 KEY="tm_xxxxxxxxxxxx"
 ```
 
-公开接口：
+### 公开接口
 
 ```bash
 curl "$BASE/public/settings"
 curl "$BASE/public/stats"
 ```
 
-基础邮箱接口：
+### 邮箱接口
 
 ```bash
 # 创建邮箱
 curl -s -X POST "$BASE/api/mailboxes" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"address":"test","domain":"example.com"}'
+  -d '{"address":"demo","domain":"example.com"}'
 
-# 列出邮箱
+# 列出全部邮箱（兼容旧行为）
 curl -s "$BASE/api/mailboxes?page=1&size=20" \
   -H "Authorization: Bearer $KEY"
 
-# 列出某邮箱邮件
+# 只看临时邮箱
+curl -s "$BASE/api/mailboxes?page=1&size=7&folder=temp" \
+  -H "Authorization: Bearer $KEY"
+
+# 只看收藏夹
+curl -s "$BASE/api/mailboxes?page=1&size=7&folder=favorites" \
+  -H "Authorization: Bearer $KEY"
+
+# 收藏 / 取消收藏
+curl -s -X PUT "$BASE/api/mailboxes/<mailbox-id>/favorite" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"favorite":true}'
+
+# 开启 / 关闭该邮箱的 TG 转发
+curl -s -X PUT "$BASE/api/mailboxes/<mailbox-id>/forward" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true}'
+```
+
+### 邮件接口
+
+```bash
+# 列出邮件
 curl -s "$BASE/api/mailboxes/<mailbox-id>/emails?page=1&size=20" \
   -H "Authorization: Bearer $KEY"
 
-# 读取单封邮件
+# 获取单封邮件详情（返回附件元信息，如可解析）
 curl -s "$BASE/api/mailboxes/<mailbox-id>/emails/<email-id>" \
+  -H "Authorization: Bearer $KEY"
+
+# 下载附件
+curl -L "$BASE/api/mailboxes/<mailbox-id>/emails/<email-id>/attachments/1" \
+  -H "Authorization: Bearer $KEY" \
+  -o attachment.bin
+
+# 手动转发已有邮件到 Telegram
+curl -s -X POST "$BASE/api/mailboxes/<mailbox-id>/emails/<email-id>/forward/tg" \
   -H "Authorization: Bearer $KEY"
 
 # 提取最新一封邮件 OTP
 curl -s "$BASE/api/mailboxes/<mailbox-id>/otp/latest" \
   -H "Authorization: Bearer $KEY"
-
-# 收藏 / 取消收藏邮箱
-curl -s -X PUT "$BASE/api/mailboxes/<mailbox-id>/favorite" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"favorite":true}'
 ```
 
-域名接口：
+### 域名接口
 
 ```bash
 # 查看共享域名池（支持过滤）
@@ -253,10 +324,29 @@ curl -s "$BASE/api/domains/<domain-id>/status" \
   -H "Authorization: Bearer $KEY"
 ```
 
-管理员域名接口：
+### 管理接口
 
 ```bash
-# 手动添加域名（可选 hostname）
+# 读取系统设置
+curl -s "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $KEY"
+
+# 更新 TG 设置
+curl -s -X PUT "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tg_bot_token":"123456:ABCDEF",
+    "tg_chat_id":"-1001234567890",
+    "tg_message_thread_id":"",
+    "tg_forward_mode":"all_with_attachments"
+  }'
+
+# 发送 TG 测试消息
+curl -s -X POST "$BASE/api/admin/settings/tg/test" \
+  -H "Authorization: Bearer $KEY"
+
+# 手动添加域名
 curl -s -X POST "$BASE/api/admin/domains" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
@@ -268,7 +358,7 @@ curl -s -X PUT "$BASE/api/admin/domains/<domain-id>/hostname" \
   -H "Content-Type: application/json" \
   -d '{"hostname":"mail.example.com"}'
 
-# MX 导入（可 force）
+# MX 导入
 curl -s -X POST "$BASE/api/admin/domains/mx-import" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
@@ -279,128 +369,31 @@ curl -s -X POST "$BASE/api/admin/domains/mx-register" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"domain":"example.com","hostname":"mail.example.com"}'
-
-# Cloudflare 自动创建 MX
-curl -s -X POST "$BASE/api/admin/domains/cf-create" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"sub.example.com","hostname":"mail.example.com"}'
-
-# Cloudflare 删除 MX 并删除本地域名
-curl -s -X DELETE "$BASE/api/admin/domains/<domain-id>/cf" \
-  -H "Authorization: Bearer $KEY"
-
-# 批量启停
-curl -s -X PUT "$BASE/api/admin/domains/batch/toggle" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"ids":[1,2,3],"active":true}'
-
-# 批量删除（可选联动删除 Cloudflare）
-curl -s -X PUT "$BASE/api/admin/domains/batch/delete" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"ids":[1,2,3],"delete_cloudflare":true}'
 ```
 
 ---
 
-## 系统设置
+## 运行与迁移说明
 
-管理员后台支持以下重要设置：
-
-- `registration_open`
-- `smtp_server_ip`
-- `smtp_hostname`
-- `mailbox_ttl_minutes`
-- `catchall_enabled`
-- `catchall_account_id`
-- `cf_api_token`
-- `site_title`
-- `announcement`
-- `default_domain`
-- `max_mailboxes_per_user`
-
-说明：
-
-- `cf_api_token` 需要具备 Cloudflare `Zone:DNS:Edit` 权限
-- `smtp_server_ip` / `smtp_hostname` 的数据库设置优先于环境变量
+- API 启动时会自动执行一组 schema compatibility 检查
+- 常见新增字段（如 `expires_at`、`is_favorite`、`tg_forward_enabled`、TG 设置项）会自动补齐
+- 一般不需要再手工跑旧版增量 SQL 才能启动
+- 附件解析基于历史 `raw_message`，不需要额外迁移已有邮件内容
 
 ---
 
-## 数据库迁移
+## 端口说明
 
-当前迁移文件：
+- `80` 对外提供 Web
+- `25` 对外提供 SMTP 收信，生产环境通常必须开放
+- `8080` 为 API 容器端口，可按需决定是否暴露到公网
 
-| 文件 | 用途 |
-|------|------|
-| `sql/init.sql` | 新库全量初始化 |
-| `sql/migrate_v2.sql` | 添加 `mailboxes.expires_at` |
-| `sql/migrate_v3.sql` | 添加 `domains.status`、`domains.mx_checked_at` 和更多设置项 |
-| `sql/migrate_v4.sql` | 添加 `mailboxes.is_favorite`、catch-all 设置项 |
-| `sql/migrate_v5.sql` | 添加 `domains.hostname`、`cf_api_token` |
+如果要改端口，请同时检查：
 
-当前 API 在启动时也会自动补齐缺失的兼容字段和设置项，所以旧库重启后端后通常能自愈升级；但如果你希望显式执行迁移，也可以手工跑：
+- `.env`
+- `docker-compose.yml`
+- `nginx/default.conf`
+- `postfix/entrypoint.sh`
+- `postfix/mail-receiver.py`
 
-```bash
-docker exec -i $(docker compose ps -q postgres) \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < sql/migrate_v5.sql
-```
-
----
-
-## 项目结构
-
-```text
-tempmail/
-├── api/
-│   ├── cf/              # Cloudflare API 客户端
-│   ├── config/          # 环境变量配置
-│   ├── handler/         # HTTP 处理器
-│   ├── middleware/      # 鉴权、限流
-│   ├── model/           # 数据结构
-│   ├── otp/             # OTP 提取逻辑
-│   ├── store/           # PostgreSQL 访问层
-│   └── main.go
-├── frontend/
-│   ├── css/style.css
-│   ├── js/app.js
-│   └── index.html
-├── nginx/
-├── postfix/
-├── pgbouncer/
-├── sql/
-├── docker-compose.yml
-└── README.md
-```
-
----
-
-## 后台任务
-
-| 任务 | 间隔 | 说明 |
-|------|------|------|
-| 邮箱清理器 | 1 分钟 | 删除过期且未收藏的邮箱 |
-| Pending 域名验证器 | 30 秒 | 激活 MX 已生效的待验证域名 |
-| Active 域名健康巡检 | 6 小时 | 重新检查已激活域名的 MX 健康 |
-| Admin Key 写入 | 启动后一次 | 把管理员 Key 写入 `data/admin.key` |
-
----
-
-## 验证建议
-
-升级后建议优先验证：
-
-1. 登录后台，确认系统设置里可见 `catch-all` 和 `Cloudflare Token`
-2. 创建邮箱并测试三栏视图、收藏、前端取码
-3. 调用 `GET /api/mailboxes/:id/otp/latest`
-4. 添加带 `hostname` 的域名，检查 DNS 提示是否正确
-5. 测试域名筛选和批量操作
-6. 若已配置 `cf_api_token`，测试 `cf-create` 和 `:id/cf`
-7. 测试 catch-all 自动建箱是否仍正常
-
----
-
-## 许可证
-
-MIT
+可直接参考仓库里的 [.env.example](./.env.example) 注释。
