@@ -650,8 +650,8 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   display: grid;
   grid-template-columns: 300px 360px minmax(0, 1fr);
   gap: 0.9rem;
-  height: calc(100dvh - 220px);
-  min-height: 480px;
+  height: calc(100dvh - 196px);
+  min-height: 520px;
   padding-bottom: env(safe-area-inset-bottom);
 }
 .pane {
@@ -737,10 +737,21 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.45rem 0.6rem;
+  gap: 0.4rem;
+  padding: 0.55rem 0.75rem;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+.pane-pager-status {
+  min-width: 4.75rem;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.pager-btn {
+  min-width: 2.3rem;
+  padding: 0.42rem 0.55rem;
 }
 .table-actions {
   display: flex;
@@ -1110,7 +1121,8 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   .page { padding: 1rem; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
   .three-pane-grid {
     grid-template-columns: 260px 300px minmax(0, 1fr);
-    min-height: 420px;
+    height: calc(100dvh - 184px);
+    min-height: 460px;
   }
 }
 
@@ -1152,8 +1164,8 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   }
 
   .page {
-    padding: 0.85rem;
-    padding-bottom: max(0.85rem, env(safe-area-inset-bottom));
+    padding: 0.75rem;
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
   .page:has(.three-pane-grid) {
     display: flex;
@@ -1162,7 +1174,8 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 
   .dashboard-stats-strip {
     gap: 0.5rem 0.8rem;
-    padding: 0.55rem 0.75rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.55rem;
   }
   .dashboard-stats-strip .strip-item {
     flex: 1 1 calc(50% - 0.4rem);
@@ -1171,8 +1184,11 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 
   .three-pane-grid {
     grid-template-columns: 1fr;
-    height: calc(100dvh - var(--mobile-chrome-h));
-    min-height: 24rem;
+    height: calc(100dvh - 12.2rem);
+    min-height: 26rem;
+  }
+  .three-pane-grid[data-mobile-view="mailboxes"] {
+    height: calc(100dvh - 10.9rem);
   }
   .three-pane-grid .pane {
     display: none;
@@ -1202,8 +1218,12 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   }
   .pane-pager { padding: 0.55rem 0.75rem; }
   .pane-pager .btn-sm {
-    min-height: 40px;
-    padding: 0.5rem 0.85rem;
+    min-height: 38px;
+    padding: 0.45rem 0.65rem;
+  }
+  .pane-pager-status {
+    min-width: 4.4rem;
+    font-size: 0.76rem;
   }
 
   .btn { min-height: var(--tap-min); }

@@ -1013,27 +1013,44 @@ window.forwardEmailToTelegram = async function(mid, eid) {
   }
 };
 
-window.dashChangePage = async function(kind, delta) {
+window.dashSetPage = async function(kind, targetPage) {
   if (kind === 'mailbox') {
-    dashState.mailboxPage = Math.max(1, dashState.mailboxPage + delta);
+    const totalPages = Math.max(1, Math.ceil((dashState.mailboxTotal || 0) / MAILBOX_PAGE_SIZE));
+    dashState.mailboxPage = Math.min(totalPages, Math.max(1, Number(targetPage) || 1));
     const resp = await api.listMailboxesPage(dashState.mailboxPage, MAILBOX_PAGE_SIZE);
     applyMailboxPage(resp);
     paneRenderMailboxes();
     paneRenderEmailView();
     startEmailListPoller();
     await paneRenderEmails();
-  } else if (kind === 'email') {
-    dashState.emailPage = Math.max(1, dashState.emailPage + delta);
+    return;
+  }
+
+  if (kind === 'email') {
+    const totalPages = Math.max(1, Math.ceil((dashState.emailTotal || 0) / PAGE_SIZE));
+    dashState.emailPage = Math.min(totalPages, Math.max(1, Number(targetPage) || 1));
     await paneRenderEmails();
   }
 };
 
+window.dashChangePage = async function(kind, delta) {
+  if (kind === 'mailbox') {
+    await window.dashSetPage(kind, dashState.mailboxPage + delta);
+  } else if (kind === 'email') {
+    await window.dashSetPage(kind, dashState.emailPage + delta);
+  }
+};
+
 function buildPager(kind, page, totalPages) {
+  const isFirst = page <= 1;
+  const isLast = page >= totalPages;
   return `
     <div class="pane-pager">
-      <button class="btn btn-ghost btn-sm" onclick="dashChangePage('${kind}',-1)" ${page <= 1 ? 'disabled' : ''}>‹ 上一页</button>
-      <span style="font-size:0.78rem;color:var(--text-muted)">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost btn-sm" onclick="dashChangePage('${kind}',1)" ${page >= totalPages ? 'disabled' : ''}>下一页 ›</button>
+      <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',1)" ${isFirst ? 'disabled' : ''} aria-label="首页">《</button>
+      <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',${page - 1})" ${isFirst ? 'disabled' : ''} aria-label="上一页">&lt;</button>
+      <span class="pane-pager-status">${page} / ${totalPages}</span>
+      <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',${page + 1})" ${isLast ? 'disabled' : ''} aria-label="下一页">&gt;</button>
+      <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',${totalPages})" ${isLast ? 'disabled' : ''} aria-label="末页">》</button>
     </div>
   `;
 }
