@@ -2700,11 +2700,15 @@ async function renderAdminSettings(container) {
         <div class="divider"></div>
 
         ${selectRow('input-tg-forward-mode', 'Telegram 转发模式', tgForwardMode, [
-          { value: 'all_with_attachments', label: '全量转发（带附件）' },
-          { value: 'all_without_attachments', label: '全量转发（不带附件）' },
+          { value: 'subject_only', label: '仅转发标题' },
+          { value: 'important_without_attachments', label: '重要正文（不带附件）' },
+          { value: 'important_with_attachments', label: '重要正文（带附件）' },
+          { value: 'notify_all', label: '仅通知所有邮件' },
+          { value: 'all_with_attachments', label: '完整正文（带附件）' },
+          { value: 'all_without_attachments', label: '完整正文（不带附件）' },
           { value: 'attachments_only', label: '仅转发带附件邮件（带附件）' },
           { value: 'notify_attachments', label: '仅通知有带附件邮件' },
-        ], '每个邮箱可单独开启或关闭 TG 转发；这里控制全局发送策略。', 'tg_forward_mode')}
+        ], '每个邮箱可单独开启或关闭 TG 转发；重点正文模式会尽量提取 OTP、验证/登录类链接和较短的关键信息，同时关闭 Telegram 链接预览卡片。', 'tg_forward_mode')}
         <div class="divider"></div>
 
         <div class="form-group">

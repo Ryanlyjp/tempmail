@@ -153,8 +153,12 @@ http://<服务器IP>
 
 ### 全局转发模式
 
-- `all_with_attachments`: 全量转发，正文 + 附件
-- `all_without_attachments`: 全量转发，仅正文
+- `subject_only`: 只转发邮箱 / 发件人 / 标题 / 时间
+- `important_without_attachments`: 转发去噪后的重要正文，不上传附件
+- `important_with_attachments`: 转发去噪后的重要正文，并上传附件
+- `notify_all`: 所有邮件只通知，不带正文
+- `all_with_attachments`: 完整正文 + 附件
+- `all_without_attachments`: 完整正文，不带附件
 - `attachments_only`: 仅带附件邮件才转发，且上传附件
 - `notify_attachments`: 仅带附件邮件才通知，不上传附件
 
@@ -163,6 +167,7 @@ http://<服务器IP>
 - 每个邮箱可单独开启 / 关闭 TG 转发
 - 收到新邮件时按“邮箱开关 + 全局模式”共同决定是否发送
 - 邮件正文会带上邮箱地址、发件人、主题、时间、附件数
+- 重点正文模式会优先提取 OTP、验证/登录类链接、较短的关键句，并默认关闭 Telegram 链接预览卡片
 - 设置页可发送一条 TG 测试消息验证连通性
 - 单封已有邮件可手动补转发到 TG
 

@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"mime/multipart"
 	"net/http"
+	neturl "net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +21,14 @@ import (
 )
 
 const (
-	ModeAllWithAttachments    = "all_with_attachments"
-	ModeAllWithoutAttachments = "all_without_attachments"
-	ModeAttachmentsOnly       = "attachments_only"
-	ModeNotifyAttachments     = "notify_attachments"
+	ModeAllWithAttachments       = "all_with_attachments"
+	ModeAllWithoutAttachments    = "all_without_attachments"
+	ModeAttachmentsOnly          = "attachments_only"
+	ModeNotifyAttachments        = "notify_attachments"
+	ModeSubjectOnly              = "subject_only"
+	ModeImportantWithoutAttach   = "important_without_attachments"
+	ModeImportantWithAttachments = "important_with_attachments"
+	ModeNotifyAll                = "notify_all"
 )
 
 type Config struct {
@@ -40,7 +47,41 @@ type apiResponse struct {
 	Description string `json:"description"`
 }
 
+type linkCandidate struct {
+	URL   string
+	Label string
+}
+
+type importantContent struct {
+	Code  string
+	Lines []string
+	Links []string
+}
+
 var defaultHTTPClient = &http.Client{Timeout: 25 * time.Second}
+
+var (
+	anchorRegexp     = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>`)
+	urlRegexp        = regexp.MustCompile(`https?://[^\s<>"')]+`)
+	whitespaceRegexp = regexp.MustCompile(`\s+`)
+)
+
+var importantKeywords = []string{
+	"验证码", "校验码", "动态码", "安全码", "验证", "验证邮箱", "确认邮箱",
+	"otp", "passcode", "one time", "one-time", "verify", "verification", "confirm",
+	"confirmed", "activation", "activate", "reset", "password", "sign in", "signin",
+	"log in", "login", "magic link", "approve", "approval", "authenticate",
+	"authentication", "security", "2fa", "two-factor", "recover", "recovery",
+	"邀请", "invite", "invitation", "加入", "accept invite",
+}
+
+var noiseKeywords = []string{
+	"unsubscribe", "opt out", "optout", "opt-in", "opt in", "preference", "preferences",
+	"privacy", "terms", "view in browser", "view online", "web version", "manage subscription",
+	"facebook", "instagram", "twitter", "x.com", "tiktok", "linkedin", "youtube",
+	"shop now", "browse", "sale", "discount", "offer", "newsletter", "utm_", "xnpe_",
+	"mc_", "trk", "tracking", "optedout",
+}
 
 func NormalizeMode(mode string) string {
 	switch strings.TrimSpace(mode) {
@@ -50,6 +91,14 @@ func NormalizeMode(mode string) string {
 		return ModeAttachmentsOnly
 	case ModeNotifyAttachments:
 		return ModeNotifyAttachments
+	case ModeSubjectOnly:
+		return ModeSubjectOnly
+	case ModeImportantWithoutAttach:
+		return ModeImportantWithoutAttach
+	case ModeImportantWithAttachments:
+		return ModeImportantWithAttachments
+	case ModeNotifyAll:
+		return ModeNotifyAll
 	default:
 		return ModeAllWithAttachments
 	}
@@ -132,17 +181,86 @@ func shouldSendForMode(mode string, hasAttachments bool) bool {
 }
 
 func shouldUploadAttachments(mode string) bool {
-	return mode == ModeAllWithAttachments || mode == ModeAttachmentsOnly
+	return mode == ModeAllWithAttachments ||
+		mode == ModeAttachmentsOnly ||
+		mode == ModeImportantWithAttachments
 }
 
 func buildMessageText(mode string, mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) string {
-	var b strings.Builder
-	if mode == ModeNotifyAttachments {
-		b.WriteString("TempMail 附件通知\n")
-	} else {
-		b.WriteString("TempMail 邮件转发\n")
+	switch mode {
+	case ModeNotifyAttachments:
+		return buildNotificationText("TempMail 附件通知", "收到一封带附件邮件", mailbox, email, attachments)
+	case ModeNotifyAll:
+		return buildNotificationText("TempMail 收件通知", "收到一封新邮件", mailbox, email, attachments)
+	case ModeSubjectOnly:
+		return buildSubjectOnlyText(mailbox, email, attachments)
+	case ModeImportantWithoutAttach, ModeImportantWithAttachments:
+		return buildImportantMessageText(mailbox, email, attachments)
+	default:
+		return buildFullMessageText(mailbox, email, attachments)
 	}
-	b.WriteString("邮箱: ")
+}
+
+func buildNotificationText(title, note string, mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) string {
+	var b strings.Builder
+	appendMessageHeader(&b, title, mailbox, email, attachments)
+	if note != "" {
+		b.WriteString("\n说明: ")
+		b.WriteString(note)
+	}
+	return b.String()
+}
+
+func buildSubjectOnlyText(mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) string {
+	var b strings.Builder
+	appendMessageHeader(&b, "TempMail 标题转发", mailbox, email, attachments)
+	return b.String()
+}
+
+func buildImportantMessageText(mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) string {
+	var b strings.Builder
+	appendMessageHeader(&b, "TempMail 重点转发", mailbox, email, attachments)
+
+	info := extractImportantContent(email)
+	if info.Code != "" {
+		b.WriteString("\n\n验证码:\n")
+		b.WriteString(info.Code)
+	}
+	if len(info.Lines) > 0 {
+		b.WriteString("\n\n重点正文:")
+		for _, line := range info.Lines {
+			b.WriteString("\n- ")
+			b.WriteString(line)
+		}
+	}
+	if len(info.Links) > 0 {
+		b.WriteString("\n\n关键链接:")
+		for _, link := range info.Links {
+			b.WriteString("\n- ")
+			b.WriteString(link)
+		}
+	}
+	if info.Code == "" && len(info.Lines) == 0 && len(info.Links) == 0 {
+		b.WriteString("\n\n说明: 未提取到关键正文，仅保留邮件头信息。")
+	}
+	return b.String()
+}
+
+func buildFullMessageText(mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) string {
+	var b strings.Builder
+	appendMessageHeader(&b, "TempMail 邮件转发", mailbox, email, attachments)
+
+	preview := buildBodyPreview(email)
+	if preview != "" {
+		b.WriteString("\n\n正文预览:\n")
+		b.WriteString(preview)
+	}
+	return b.String()
+}
+
+func appendMessageHeader(b *strings.Builder, title string, mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) {
+	b.WriteString(title)
+	b.WriteString("\n邮箱: ")
 	b.WriteString(mailbox.FullAddress)
 	b.WriteString("\n发件人: ")
 	b.WriteString(fallback(email.Sender, "—"))
@@ -155,27 +273,370 @@ func buildMessageText(mode string, mailbox model.Mailbox, email model.Email, att
 		b.WriteString(strconv.Itoa(len(attachments)))
 		b.WriteString(" 个")
 	}
-
-	if mode == ModeNotifyAttachments {
-		b.WriteString("\n说明: 收到一封带附件邮件")
-		return b.String()
-	}
-
-	preview := buildBodyPreview(email)
-	if preview != "" {
-		b.WriteString("\n\n正文预览:\n")
-		b.WriteString(preview)
-	}
-	return b.String()
 }
 
 func buildBodyPreview(email model.Email) string {
-	preview := strings.TrimSpace(email.BodyText)
-	if preview == "" {
-		preview = otp.StripHTML(email.BodyHTML)
+	preview := extractMessageText(email)
+	return buildReadablePreview(preview, 1200)
+}
+
+func extractImportantContent(email model.Email) importantContent {
+	text := extractMessageText(email)
+	combined := strings.Join([]string{email.Subject, email.BodyText, otp.StripHTML(email.BodyHTML)}, "\n")
+
+	info := importantContent{
+		Code: otp.ExtractFromHTML(email.BodyHTML),
 	}
-	preview = strings.Join(strings.Fields(preview), " ")
-	return truncate(preview, 1200)
+	if info.Code == "" {
+		info.Code = otp.Extract(combined)
+	}
+
+	info.Lines = selectImportantLines(text, info.Code)
+	info.Links = selectImportantLinks(email)
+
+	if len(info.Lines) == 0 {
+		fallback := buildReadablePreview(text, 280)
+		if fallback != "" {
+			info.Lines = []string{fallback}
+		}
+	}
+	return info
+}
+
+func extractMessageText(email model.Email) string {
+	text := strings.TrimSpace(email.BodyText)
+	if text == "" {
+		text = otp.StripHTML(email.BodyHTML)
+	}
+	return html.UnescapeString(text)
+}
+
+func buildReadablePreview(text string, limit int) string {
+	lines := collectTextCandidates(text)
+	if len(lines) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = compactPreviewLine(line)
+		line = normalizeSpace(line)
+		if line == "" || line == "[链接]" || isMostlyURLLine(line) || isBoilerplateLine(line) {
+			continue
+		}
+		parts = append(parts, line)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncate(strings.Join(parts, "\n"), limit)
+}
+
+func selectImportantLines(text, code string) []string {
+	lines := collectTextCandidates(text)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	selected := make([]string, 0, 3)
+	for _, line := range lines {
+		line = compactPreviewLine(line)
+		line = normalizeSpace(line)
+		if line == "" || isMostlyURLLine(line) || isBoilerplateLine(line) {
+			continue
+		}
+		if scoreImportantLine(line, code) <= 0 {
+			continue
+		}
+		selected = append(selected, truncate(line, 220))
+		if len(selected) >= 3 {
+			return selected
+		}
+	}
+
+	if len(selected) > 0 {
+		return selected
+	}
+
+	for _, line := range lines {
+		line = compactPreviewLine(line)
+		line = normalizeSpace(line)
+		if line == "" || isMostlyURLLine(line) || isBoilerplateLine(line) {
+			continue
+		}
+		selected = append(selected, truncate(line, 220))
+		break
+	}
+	return selected
+}
+
+func collectTextCandidates(text string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	rawLines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	candidates := make([]string, 0, len(rawLines))
+	seen := make(map[string]struct{})
+
+	for _, rawLine := range rawLines {
+		line := normalizeSpace(rawLine)
+		if line == "" {
+			continue
+		}
+
+		for _, piece := range splitLongLine(line) {
+			piece = normalizeSpace(piece)
+			if piece == "" {
+				continue
+			}
+			if _, ok := seen[piece]; ok {
+				continue
+			}
+			seen[piece] = struct{}{}
+			candidates = append(candidates, piece)
+		}
+	}
+
+	return candidates
+}
+
+func splitLongLine(line string) []string {
+	if utf8Len(line) <= 180 {
+		return []string{line}
+	}
+
+	parts := strings.FieldsFunc(line, func(r rune) bool {
+		switch r {
+		case '。', '！', '？', '!', '?':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(parts) == 0 {
+		return []string{line}
+	}
+	return parts
+}
+
+func compactPreviewLine(line string) string {
+	return urlRegexp.ReplaceAllStringFunc(line, func(raw string) string {
+		clean := trimURLPunctuation(raw)
+		if clean == "" {
+			return ""
+		}
+		if looksLikeTrackingURL(clean) || utf8Len(clean) > 96 {
+			return "[链接]"
+		}
+		return clean
+	})
+}
+
+func scoreImportantLine(line, code string) int {
+	score := 0
+	lower := strings.ToLower(line)
+	if code != "" && strings.Contains(strings.ToUpper(line), strings.ToUpper(code)) {
+		score += 5
+	}
+	if containsKeyword(lower, importantKeywords) {
+		score += 3
+	}
+	if utf8Len(line) >= 10 && utf8Len(line) <= 180 {
+		score++
+	}
+	if containsKeyword(lower, noiseKeywords) {
+		score -= 3
+	}
+	if isMostlyURLLine(line) {
+		score -= 4
+	}
+	return score
+}
+
+func selectImportantLinks(email model.Email) []string {
+	candidates := collectLinkCandidates(email)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	context := strings.ToLower(strings.Join([]string{email.Subject, email.BodyText, otp.StripHTML(email.BodyHTML)}, "\n"))
+	transactional := containsKeyword(context, importantKeywords)
+
+	selected := make([]string, 0, 2)
+	seen := make(map[string]struct{})
+
+	for _, candidate := range candidates {
+		if isStrongImportantLink(candidate) {
+			if _, ok := seen[candidate.URL]; ok {
+				continue
+			}
+			seen[candidate.URL] = struct{}{}
+			selected = append(selected, formatLink(candidate))
+			if len(selected) >= 2 {
+				return selected
+			}
+		}
+	}
+
+	if len(selected) > 0 || !transactional {
+		return selected
+	}
+
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.URL]; ok {
+			continue
+		}
+		if looksLikeTrackingURL(candidate.URL) || containsKeyword(strings.ToLower(candidate.Label), noiseKeywords) {
+			continue
+		}
+		seen[candidate.URL] = struct{}{}
+		selected = append(selected, formatLink(candidate))
+		if len(selected) >= 2 {
+			return selected
+		}
+	}
+
+	return selected
+}
+
+func collectLinkCandidates(email model.Email) []linkCandidate {
+	candidates := make([]linkCandidate, 0, 4)
+	seen := make(map[string]struct{})
+
+	for _, match := range anchorRegexp.FindAllStringSubmatch(email.BodyHTML, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		rawURL := trimURLPunctuation(html.UnescapeString(strings.TrimSpace(match[1])))
+		if rawURL == "" {
+			continue
+		}
+		if _, ok := seen[rawURL]; ok {
+			continue
+		}
+		seen[rawURL] = struct{}{}
+		label := normalizeSpace(html.UnescapeString(otp.StripHTML(match[2])))
+		candidates = append(candidates, linkCandidate{URL: rawURL, Label: label})
+	}
+
+	text := strings.Join([]string{email.BodyText, otp.StripHTML(email.BodyHTML)}, "\n")
+	for _, rawURL := range urlRegexp.FindAllString(text, -1) {
+		rawURL = trimURLPunctuation(rawURL)
+		if rawURL == "" {
+			continue
+		}
+		if _, ok := seen[rawURL]; ok {
+			continue
+		}
+		seen[rawURL] = struct{}{}
+		candidates = append(candidates, linkCandidate{URL: rawURL})
+	}
+
+	return candidates
+}
+
+func isStrongImportantLink(candidate linkCandidate) bool {
+	lowerURL := strings.ToLower(candidate.URL)
+	lowerLabel := strings.ToLower(candidate.Label)
+	if lowerURL == "" || strings.HasPrefix(lowerURL, "mailto:") {
+		return false
+	}
+	if containsKeyword(lowerURL, noiseKeywords) || containsKeyword(lowerLabel, noiseKeywords) {
+		return false
+	}
+	if containsKeyword(lowerURL, importantKeywords) || containsKeyword(lowerLabel, importantKeywords) {
+		return true
+	}
+	if looksLikeTrackingURL(candidate.URL) {
+		return false
+	}
+	return false
+}
+
+func formatLink(candidate linkCandidate) string {
+	label := normalizeSpace(candidate.Label)
+	if label != "" && !strings.EqualFold(label, candidate.URL) {
+		return truncate(label, 80) + ": " + candidate.URL
+	}
+	return candidate.URL
+}
+
+func looksLikeTrackingURL(raw string) bool {
+	lower := strings.ToLower(raw)
+	if containsKeyword(lower, noiseKeywords) {
+		return true
+	}
+
+	parsed, err := neturl.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if strings.Count(parsed.RawQuery, "&") >= 4 {
+		return true
+	}
+	query := parsed.Query()
+	if len(query) >= 4 {
+		return true
+	}
+	return false
+}
+
+func isMostlyURLLine(line string) bool {
+	urls := urlRegexp.FindAllString(line, -1)
+	if len(urls) == 0 {
+		return false
+	}
+
+	urlChars := 0
+	for _, raw := range urls {
+		urlChars += utf8Len(raw)
+	}
+
+	withoutURLs := normalizeSpace(urlRegexp.ReplaceAllString(line, " "))
+	if withoutURLs == "" {
+		return true
+	}
+	return urlChars >= utf8Len(line)/2
+}
+
+func isBoilerplateLine(line string) bool {
+	lower := strings.ToLower(normalizeSpace(line))
+	if lower == "" {
+		return true
+	}
+	if containsKeyword(lower, noiseKeywords) {
+		return true
+	}
+	if strings.HasPrefix(lower, "copyright") || strings.HasPrefix(lower, "all rights reserved") {
+		return true
+	}
+	return false
+}
+
+func containsKeyword(lower string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSpace(value string) string {
+	value = html.UnescapeString(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	return whitespaceRegexp.ReplaceAllString(value, " ")
+}
+
+func trimURLPunctuation(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), ".,;:!?)\"]}>")
+}
+
+func utf8Len(value string) int {
+	return len([]rune(value))
 }
 
 func fallback(value, backup string) string {
@@ -195,8 +656,9 @@ func truncate(value string, limit int) string {
 
 func sendMessage(ctx context.Context, cfg Config, text string) error {
 	payload := map[string]any{
-		"chat_id": cfg.ChatID,
-		"text":    text,
+		"chat_id":                  cfg.ChatID,
+		"text":                     text,
+		"disable_web_page_preview": true,
 	}
 	if threadID, ok := parseThreadID(cfg.MessageThreadID); ok {
 		payload["message_thread_id"] = threadID
