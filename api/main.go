@@ -202,12 +202,12 @@ func main() {
 				localPart := recipient[:atIdx]
 				domainPart := recipient[atIdx+1:]
 
-				// 域名必须已托管且 active：先精确匹配，未命中再对启用了
+				// 域名只要已录入系统即可收件：先精确匹配，未命中再对启用了
 				// 多级子域名的域名做后缀匹配（xx.bb.cc.dd → base=bb.cc.dd）。
 				// catch-all 仍按 base 域名落账，full_address 保留完整 recipient。
-				domainRec, err := db.GetDomainByName(ctx, domainPart)
+				domainRec, err := db.GetHostedDomainByName(ctx, domainPart)
 				if err != nil {
-					subEnabled, listErr := db.ListSubdomainEnabledDomains(ctx)
+					subEnabled, listErr := db.ListHostedSubdomainEnabledDomains(ctx)
 					if listErr != nil || len(subEnabled) == 0 {
 						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "domain not hosted"})
 						return
@@ -221,9 +221,9 @@ func main() {
 						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "domain not hosted"})
 						return
 					}
-					baseRec, berr := db.GetDomainByName(ctx, base)
+					baseRec, berr := db.GetHostedDomainByName(ctx, base)
 					if berr != nil {
-						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "base domain not active"})
+						c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "base domain not hosted"})
 						return
 					}
 					domainRec = baseRec

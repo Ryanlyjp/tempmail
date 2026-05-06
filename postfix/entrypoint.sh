@@ -32,8 +32,6 @@ data = json.load(sys.stdin)
 exact_lines = []
 regex_lines = []
 for d in data.get('domains', []):
-    if not d.get('is_active', False):
-        continue
     name = d['domain']
     exact_lines.append(f\"{name}     OK\")
     if d.get('subdomain_enabled', False):

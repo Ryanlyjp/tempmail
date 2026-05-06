@@ -2012,13 +2012,13 @@ async function renderAdminDomains(container) {
         <div class="card-body" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
           <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(true)">全选当前结果</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleAllAdminDomains(false)">清空选择</button>
-          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(true)">批量启用</button>
-          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(false)">批量停用</button>
-          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomainSubdomain(true)" title="批量为选中域名打开子域开关">✦ 批量启用子域</button>
-          <button class="btn btn-ghost btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomainSubdomain(false)">关闭子域</button>
-          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(false)">批量删除本地</button>
-          <button class="btn btn-danger btn-sm" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(true)">批量删除并删 CF</button>
-          <span style="font-size:0.78rem;color:var(--text-muted)">已选 ${selectedIds.length} 个，当前结果 ${filtered.length} 个</span>
+          <button class="btn btn-ghost btn-sm" id="admin-domains-bulk-enable" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(true)">批量启用</button>
+          <button class="btn btn-ghost btn-sm" id="admin-domains-bulk-disable" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomains(false)">批量停用</button>
+          <button class="btn btn-ghost btn-sm" id="admin-domains-bulk-sub-on" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomainSubdomain(true)" title="批量为选中域名打开子域开关">✦ 批量启用子域</button>
+          <button class="btn btn-ghost btn-sm" id="admin-domains-bulk-sub-off" ${selectedIds.length ? '' : 'disabled'} onclick="batchToggleDomainSubdomain(false)">关闭子域</button>
+          <button class="btn btn-danger btn-sm" id="admin-domains-bulk-delete-local" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(false)">批量删除本地</button>
+          <button class="btn btn-danger btn-sm" id="admin-domains-bulk-delete-cf" ${selectedIds.length ? '' : 'disabled'} onclick="confirmBatchDeleteDomains(true)">批量删除并删 CF</button>
+          <span id="admin-domains-bulk-status" data-filtered-count="${filtered.length}" style="font-size:0.78rem;color:var(--text-muted)">已选 ${selectedIds.length} 个，当前结果 ${filtered.length} 个</span>
         </div>
       </div>
 
@@ -2181,6 +2181,7 @@ window.adminDomainSetFilter = function(kind, value) {
 
 window.toggleAdminDomainSelection = function(id, checked) {
   state.adminDomainSelection[id] = !!checked;
+  updateAdminDomainBulkActions();
 };
 
 window.toggleAllAdminDomains = async function(checked) {
@@ -2197,6 +2198,27 @@ window.toggleAllAdminDomains = async function(checked) {
   });
   renderPage('admin-domains');
 };
+
+function updateAdminDomainBulkActions() {
+  const selectedCount = Object.keys(state.adminDomainSelection || {}).filter(id => state.adminDomainSelection[id]).length;
+  [
+    'admin-domains-bulk-enable',
+    'admin-domains-bulk-disable',
+    'admin-domains-bulk-sub-on',
+    'admin-domains-bulk-sub-off',
+    'admin-domains-bulk-delete-local',
+    'admin-domains-bulk-delete-cf',
+  ].forEach(id => {
+    const btn = $(id);
+    if (btn) btn.disabled = selectedCount === 0;
+  });
+
+  const status = $('admin-domains-bulk-status');
+  if (status) {
+    const filteredCount = Number(status.dataset.filteredCount || 0);
+    status.textContent = `已选 ${selectedCount} 个，当前结果 ${filteredCount} 个`;
+  }
+}
 
 window.showAddDomainModal = function() {
   const old = document.querySelector('.modal-overlay');

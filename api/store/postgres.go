@@ -351,7 +351,7 @@ func (s *Store) GetActiveDomains(ctx context.Context) ([]model.Domain, error) {
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[model.Domain])
 }
 
-// ListSubdomainEnabledDomains 返回所有开启了多级子域的活跃域名（catch-all 后缀匹配用）
+// ListSubdomainEnabledDomains 返回所有开启了多级子域的活跃域名（创建邮箱等场景用）
 func (s *Store) ListSubdomainEnabledDomains(ctx context.Context) ([]model.Domain, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, domain, hostname, is_active, status,
@@ -395,6 +395,37 @@ func (s *Store) GetDomainByName(ctx context.Context, domain string) (*model.Doma
 		return nil, err
 	}
 	return &d, nil
+}
+
+// GetHostedDomainByName 按域名字符串查找已录入域名（不要求 active），供 SMTP 收件 / catch-all 使用。
+func (s *Store) GetHostedDomainByName(ctx context.Context, domain string) (*model.Domain, error) {
+	var d model.Domain
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
+		 FROM domains WHERE domain = $1`,
+		strings.ToLower(domain),
+	).Scan(&d.ID, &d.Domain, &d.Hostname, &d.IsActive, &d.Status,
+		&d.SubdomainEnabled, &d.SubdomainRandomLength, &d.CreatedAt, &d.MxCheckedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// ListHostedSubdomainEnabledDomains 返回所有开启了多级子域的已录入域名（不要求 active），供 SMTP 收件后缀匹配使用。
+func (s *Store) ListHostedSubdomainEnabledDomains(ctx context.Context) ([]model.Domain, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, domain, hostname, is_active, status,
+		        subdomain_enabled, subdomain_random_length,
+		        created_at, mx_checked_at
+		 FROM domains WHERE subdomain_enabled = TRUE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[model.Domain])
 }
 
 func (s *Store) GetDomainByID(ctx context.Context, domainID int) (*model.Domain, error) {
