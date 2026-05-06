@@ -2901,6 +2901,21 @@ window.showMXRegisterModal = function() {
         <input class="form-input" id="mxr-hostname" placeholder="mail.example.com" />
         <div class="form-hint">管理员可为该域名单独指定 MX Hostname；留空则沿用全局默认。</div>
       </div>` : ''}
+      <div class="toggle-wrap" style="margin:0.4rem 0 0.6rem">
+        <label class="toggle">
+          <input type="checkbox" id="mxr-sub-enabled">
+          <span class="toggle-slider"></span>
+        </label>
+        <div>
+          <div class="toggle-label">启用多级子域名</div>
+          <span class="toggle-desc" style="font-size:0.74rem">开启后会额外要求 <code>*.domain</code> 的通配 MX 生效，才能完成自动验证。</span>
+        </div>
+      </div>
+      <div class="form-group" id="mxr-sub-length-wrap" style="display:none">
+        <label class="form-label">随机子域长度（2–8）</label>
+        <input class="form-input" id="mxr-sub-length" type="number" min="2" max="8" value="5" />
+        <div class="form-hint">用于后续随机生成多级子域邮箱地址时的默认长度。</div>
+      </div>
       <div id="mxr-dns-hint" style="display:none;background:var(--bg-secondary);border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.6rem;font-size:0.8rem">
         <b>请在 DNS 管理面板添加以下记录：</b>
         <table style="margin-top:0.5rem;width:100%;border-collapse:collapse;font-size:0.76rem">
@@ -2920,13 +2935,21 @@ window.showMXRegisterModal = function() {
 
   // 实时更新 DNS 提示
   const inp = overlay.querySelector('#mxr-domain');
+  const subEnabledInp = overlay.querySelector('#mxr-sub-enabled');
+  const subLengthWrap = overlay.querySelector('#mxr-sub-length-wrap');
   inp?.addEventListener('keydown', e => { if (e.key === 'Enter') submitMXRegister(); });
+  subEnabledInp?.addEventListener('change', () => {
+    if (subLengthWrap) subLengthWrap.style.display = subEnabledInp.checked ? '' : 'none';
+  });
 
   overlay.querySelector('#mxr-submit').addEventListener('click', submitMXRegister);
 
   async function submitMXRegister() {
     const domain = (inp?.value || '').trim().toLowerCase();
     const hostname = (overlay.querySelector('#mxr-hostname')?.value || '').trim();
+    const subEnabled = !!overlay.querySelector('#mxr-sub-enabled')?.checked;
+    const subLengthRaw = Number(overlay.querySelector('#mxr-sub-length')?.value || 5);
+    const subLength = Number.isFinite(subLengthRaw) ? Math.max(2, Math.min(8, Math.floor(subLengthRaw))) : 5;
     if (!domain) { toast('请输入域名', 'warn'); return; }
     const btn    = overlay.querySelector('#mxr-submit');
     const status = overlay.querySelector('#mxr-status');
@@ -2939,6 +2962,10 @@ window.showMXRegisterModal = function() {
     try {
       const body = { domain };
       if (isAdmin && hostname) body.hostname = hostname;
+      if (subEnabled) {
+        body.subdomain_enabled = true;
+        body.subdomain_random_length = subLength;
+      }
       const r = isAdmin ? await api.admin.mxRegister(body) : await api.submitDomain(body);
       if (r.status === 'active') {
         overlay.innerHTML = `
@@ -2952,17 +2979,24 @@ window.showMXRegisterModal = function() {
         toast(`✓ ${domain} 已激活`, 'success');
       } else {
         // pending — 显示 DNS 配置 + 等待提示
-        const rows = (r.dns_required || []).map(rec =>
+        const dnsRecords = [
+          ...(Array.isArray(r.dns_required) ? r.dns_required : []),
+          ...(subEnabled && Array.isArray(r.wildcard_required) ? r.wildcard_required : []),
+        ];
+        const rows = dnsRecords.map(rec =>
           `<tr><td>${escHtml(rec.type)}</td><td style="font-family:monospace">${escHtml(rec.host)}</td><td style="font-family:monospace">${escHtml(rec.value)}</td><td>${rec.priority || '—'}</td></tr>`
         ).join('');
         overlay.querySelector('#mxr-dns-rows').innerHTML = rows;
         hint.style.display = 'block';
 
+        const wildcardNote = subEnabled
+          ? `<br><span style="color:var(--text-muted)">通配 MX：${escHtml(r.wildcard_mx_status || '等待检测')}</span>`
+          : '';
         status.style.display = 'block';
         status.innerHTML = `
           <div style="background:var(--clr-warn-bg,#fff8e1);border:1px solid var(--clr-warn,#e6a817);border-radius:6px;padding:0.6rem 0.9rem;font-size:0.81rem">
             ⏳ <b>域名已加入验证队列（ID ${r.domain.id}）</b><br>
-            MX 记录配置生效后（通常 5-30 分钟），系统将自动激活。<br>
+            MX 记录配置生效后（通常 5-30 分钟），系统将自动激活。${wildcardNote}<br>
             <span style="color:var(--text-muted)">此窗口关闭后可在「域名列表」页查看验证进度</span>
           </div>
         `;

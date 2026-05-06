@@ -230,13 +230,13 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 
 	if !req.Force && (!matched || (req.SubdomainEnabled && !wildcardMatched)) {
 		resp := gin.H{
-			"error":              "MX检测未通过，如确定要导入请加 force:true",
-			"mx_status":          mxStatus,
-			"mx_hosts":           mxHosts,
-			"server_ip":          serverIP,
-			"domain":             req.Domain,
-			"dns_hint":           h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
-			"wildcard_dns_hint":  h.buildWildcardDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+			"error":             "MX检测未通过，如确定要导入请加 force:true",
+			"mx_status":         mxStatus,
+			"mx_hosts":          mxHosts,
+			"server_ip":         serverIP,
+			"domain":            req.Domain,
+			"dns_hint":          h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
+			"wildcard_dns_hint": h.buildWildcardDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
 		}
 		if req.SubdomainEnabled {
 			resp["wildcard_mx_status"] = wildcardStatus
@@ -272,8 +272,10 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 // POST /api/admin/domains/mx-register - 提交域名等待自动MX验证（无需手动确认）
 func (h *DomainHandler) MXRegister(c *gin.Context) {
 	var req struct {
-		Domain   string `json:"domain" binding:"required"`
-		Hostname string `json:"hostname"`
+		Domain                string `json:"domain" binding:"required"`
+		Hostname              string `json:"hostname"`
+		SubdomainEnabled      bool   `json:"subdomain_enabled"`
+		SubdomainRandomLength int    `json:"subdomain_random_length"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -281,42 +283,58 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 	}
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
+	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
 
 	serverIP := h.getServerIP(c.Request.Context())
 	matched, _, mxStatus := store.CheckDomainMX(req.Domain, serverIP)
-	if matched {
-		domain, err := h.store.AddDomain(c.Request.Context(), req.Domain, req.Hostname)
+	wildcardMatched := false
+	wildcardStatus := ""
+	if req.SubdomainEnabled {
+		wildcardMatched, _, wildcardStatus = store.CheckWildcardMX(req.Domain, serverIP)
+	}
+	if matched && (!req.SubdomainEnabled || wildcardMatched) {
+		domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 		if err != nil {
 			if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 				existing, gerr := h.store.GetDomainByName(c.Request.Context(), req.Domain)
 				if gerr == nil {
-					c.JSON(http.StatusOK, gin.H{
+					resp := gin.H{
 						"domain":    existing,
 						"status":    existing.Status,
 						"mx_status": mxStatus,
 						"message":   "域名已存在且处于激活状态",
-					})
+					}
+					if req.SubdomainEnabled {
+						resp["wildcard_mx_status"] = wildcardStatus
+						resp["wildcard_mx_matched"] = wildcardMatched
+					}
+					c.JSON(http.StatusOK, resp)
 					return
 				}
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusCreated, gin.H{
+		resp := gin.H{
 			"domain":  domain,
 			"status":  "active",
 			"message": "MX验证通过，域名已立即加入域名池",
-		})
+		}
+		if req.SubdomainEnabled {
+			resp["wildcard_mx_status"] = wildcardStatus
+			resp["wildcard_mx_matched"] = wildcardMatched
+		}
+		c.JSON(http.StatusCreated, resp)
 		return
 	}
 
-	domain, err := h.store.AddDomainPending(c.Request.Context(), req.Domain, req.Hostname)
+	domain, err := h.store.AddDomainPendingWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusAccepted, gin.H{
+	resp := gin.H{
 		"domain":            domain,
 		"status":            domain.Status,
 		"server_ip":         serverIP,
@@ -324,46 +342,69 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 		"message":           fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", req.Domain),
 		"dns_required":      h.buildDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
 		"wildcard_required": h.buildWildcardDNSRecords(c.Request.Context(), req.Domain, req.Hostname),
-	})
+	}
+	if req.SubdomainEnabled {
+		resp["wildcard_mx_status"] = wildcardStatus
+		resp["wildcard_mx_matched"] = wildcardMatched
+	}
+	c.JSON(http.StatusAccepted, resp)
 }
 
 // POST /api/domains/submit — 任意已登录用户提交域名进行 MX 自动验证
 func (h *DomainHandler) Submit(c *gin.Context) {
 	var req struct {
-		Domain string `json:"domain" binding:"required"`
+		Domain                string `json:"domain" binding:"required"`
+		SubdomainEnabled      bool   `json:"subdomain_enabled"`
+		SubdomainRandomLength int    `json:"subdomain_random_length"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	c.Request.Body = http.NoBody
+	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
 
 	serverIP := h.getServerIP(c.Request.Context())
 	domain := strings.ToLower(strings.TrimSpace(req.Domain))
 	matched, _, mxStatus := store.CheckDomainMX(domain, serverIP)
-	if matched {
-		d, err := h.store.AddDomain(c.Request.Context(), domain, "")
+	wildcardMatched := false
+	wildcardStatus := ""
+	if req.SubdomainEnabled {
+		wildcardMatched, _, wildcardStatus = store.CheckWildcardMX(domain, serverIP)
+	}
+	if matched && (!req.SubdomainEnabled || wildcardMatched) {
+		d, err := h.store.AddDomainWithOptions(c.Request.Context(), domain, "", req.SubdomainEnabled, req.SubdomainRandomLength)
 		if err != nil {
 			if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 				existing, gerr := h.store.GetDomainByName(c.Request.Context(), domain)
 				if gerr == nil {
-					c.JSON(http.StatusOK, gin.H{"domain": existing, "status": existing.Status, "mx_status": mxStatus, "message": "域名已存在且处于激活状态"})
+					resp := gin.H{"domain": existing, "status": existing.Status, "mx_status": mxStatus, "message": "域名已存在且处于激活状态"}
+					if req.SubdomainEnabled {
+						resp["wildcard_mx_status"] = wildcardStatus
+						resp["wildcard_mx_matched"] = wildcardMatched
+					}
+					c.JSON(http.StatusOK, resp)
 					return
 				}
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusCreated, gin.H{"domain": d, "status": "active", "message": "MX验证通过，域名已立即加入域名池"})
+		resp := gin.H{"domain": d, "status": "active", "message": "MX验证通过，域名已立即加入域名池"}
+		if req.SubdomainEnabled {
+			resp["wildcard_mx_status"] = wildcardStatus
+			resp["wildcard_mx_matched"] = wildcardMatched
+		}
+		c.JSON(http.StatusCreated, resp)
 		return
 	}
 
-	d, err := h.store.AddDomainPending(c.Request.Context(), domain, "")
+	d, err := h.store.AddDomainPendingWithOptions(c.Request.Context(), domain, "", req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusAccepted, gin.H{
+	resp := gin.H{
 		"domain":            d,
 		"status":            d.Status,
 		"server_ip":         serverIP,
@@ -371,7 +412,12 @@ func (h *DomainHandler) Submit(c *gin.Context) {
 		"message":           fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", domain),
 		"dns_required":      h.buildDNSRecords(c.Request.Context(), domain, ""),
 		"wildcard_required": h.buildWildcardDNSRecords(c.Request.Context(), domain, ""),
-	})
+	}
+	if req.SubdomainEnabled {
+		resp["wildcard_mx_status"] = wildcardStatus
+		resp["wildcard_mx_matched"] = wildcardMatched
+	}
+	c.JSON(http.StatusAccepted, resp)
 }
 
 // GET /api/admin/domains/:id/status - 查询域名状态（用于前端轮询）

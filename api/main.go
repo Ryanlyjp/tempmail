@@ -309,15 +309,24 @@ func main() {
 				}
 				for _, d := range pendingDomains {
 					matched, _, mxStatus := store.CheckDomainMX(d.Domain, serverIP)
+					wildcardMatched := true
+					wildcardStatus := ""
+					if d.SubdomainEnabled {
+						wildcardMatched, _, wildcardStatus = store.CheckWildcardMX(d.Domain, serverIP)
+					}
 					db.TouchDomainCheckTime(context.Background(), d.ID)
-					if matched {
+					if matched && wildcardMatched {
 						if err := db.PromoteDomainToActive(context.Background(), d.ID); err != nil {
 							log.Printf("[mx-verifier] promote %s error: %v", d.Domain, err)
 						} else {
 							log.Printf("[mx-verifier] ✓ %s MX verified, domain activated", d.Domain)
 						}
 					} else {
-						log.Printf("[mx-verifier] waiting: %s — %s", d.Domain, mxStatus)
+						if d.SubdomainEnabled && !wildcardMatched {
+							log.Printf("[mx-verifier] waiting: %s — %s | wildcard: %s", d.Domain, mxStatus, wildcardStatus)
+						} else {
+							log.Printf("[mx-verifier] waiting: %s — %s", d.Domain, mxStatus)
+						}
 					}
 				}
 
