@@ -75,6 +75,7 @@ func main() {
 	// 初始化 handlers
 	accountH := handler.NewAccountHandler(db)
 	domainH := handler.NewDomainHandler(db, cfg.SMTPServerIP, cfg.SMTPHostname)
+	hostnameH := handler.NewHostnameHandler(db)
 	mailboxH := handler.NewMailboxHandler(db)
 	emailH := handler.NewEmailHandler(db)
 	settingH := handler.NewSettingHandler(db)
@@ -99,6 +100,7 @@ func main() {
 
 		// 域名池（所有用户可查看）
 		api.GET("/domains", domainH.List)
+		api.GET("/hostnames", hostnameH.List)
 		api.GET("/domains/:id/status", domainH.GetStatus) // 任意用户可轮询域名状态
 		api.GET("/stats", statsH.Get)
 		// 任意已登录用户可提交域名进行 MX 自动验证
@@ -144,6 +146,11 @@ func main() {
 			admin.GET("/settings", settingH.AdminGetAll)
 			admin.PUT("/settings", settingH.AdminUpdate)
 			admin.POST("/settings/tg/test", settingH.AdminTestTelegram)
+			admin.GET("/hostnames", hostnameH.AdminList)
+			admin.POST("/hostnames", hostnameH.Add)
+			admin.PUT("/hostnames/:id", hostnameH.Update)
+			admin.PUT("/hostnames/:id/toggle", hostnameH.Toggle)
+			admin.DELETE("/hostnames/:id", hostnameH.Delete)
 		}
 	}
 

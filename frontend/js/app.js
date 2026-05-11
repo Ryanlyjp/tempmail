@@ -46,6 +46,46 @@ function buildDataLabel(label, content, attrs = '') {
   return `<td data-label="${escHtml(label)}"${suffix}>${content}</td>`;
 }
 
+function normalizeHostnameList(items) {
+  return Array.isArray(items)
+    ? items
+        .filter(item => item && String(item.hostname || '').trim())
+        .map(item => ({
+          ...item,
+          id: Number(item.id) || 0,
+          hostname: String(item.hostname || '').trim(),
+          is_active: item.is_active !== false,
+          domain_count: Number(item.domain_count) || 0,
+        }))
+    : [];
+}
+
+function findHostnameById(items, id) {
+  const target = Number(id) || 0;
+  return normalizeHostnameList(items).find(item => item.id === target) || null;
+}
+
+function buildHostnameOptions(items, selectedId, opts = {}) {
+  const hostnames = normalizeHostnameList(items);
+  const selected = selectedId === null || selectedId === undefined || selectedId === '' ? '' : String(Number(selectedId) || 0);
+  const blank = opts.allowBlank
+    ? `<option value="">${escHtml(opts.blankLabel || '不指定')}</option>`
+    : '';
+  return blank + hostnames.map(item => {
+    const value = String(item.id);
+    const label = item.hostname + (item.is_active ? '' : '（停用）');
+    return `<option value="${value}" ${selected === value ? 'selected' : ''}>${escHtml(label)}</option>`;
+  }).join('');
+}
+
+function getDefaultHostnameFromSettings(settings) {
+  return String(settings?.smtp_hostname || '').trim();
+}
+
+function getActiveHostnamesFromSettings(settings) {
+  return normalizeHostnameList(settings?.hostnames || []);
+}
+
 function toast(msg, type = 'info') {
   const icons = { success: '✓', error: '✗', warn: '⚠', info: 'ℹ' };
   const t = el('div', `toast ${type}`, `<span>${icons[type]||'ℹ'}</span><span>${escHtml(msg)}</span>`);
@@ -223,6 +263,8 @@ const api = {
   me:              () => apiFetch(API_BASE + '/me'),
   stats:           () => apiFetch(API_BASE + '/stats'),
   domainsPayload:  (params = '') => apiFetch(API_BASE + '/domains' + (params ? '?' + params : '')),
+  hostnamesPayload: () => apiFetch(API_BASE + '/hostnames'),
+  hostnames:       () => api.hostnamesPayload().then(d => Array.isArray(d) ? d : (d.hostnames || [])),
   // 域名 → 解包 {domains:[...]} → 数组
   domains:         (params = '') => api.domainsPayload(params).then(d => Array.isArray(d) ? d : (d.domains || [])),
   // 任意已登录用户提交域名 MX 验证
@@ -281,12 +323,17 @@ const api = {
     deleteDomain:  id => apiFetch(API_BASE + '/admin/domains/' + id, { method: 'DELETE' }),
     deleteDomainCF: id => apiFetch(API_BASE + '/admin/domains/' + id + '/cf', { method: 'DELETE' }),
     toggleDomain:  (id, active) => apiFetch(API_BASE + '/admin/domains/' + id + '/toggle', { method: 'PUT', body: JSON.stringify({ active }) }),
-    updateDomainHostname: (id, hostname) => apiFetch(API_BASE + '/admin/domains/' + id + '/hostname', { method: 'PUT', body: JSON.stringify({ hostname }) }),
+    updateDomainHostname: (id, body) => apiFetch(API_BASE + '/admin/domains/' + id + '/hostname', { method: 'PUT', body: JSON.stringify(body) }),
     updateDomainSubdomain: (id, body) => apiFetch(API_BASE + '/admin/domains/' + id + '/subdomain', { method: 'PUT', body: JSON.stringify(body) }),
     batchToggleDomains: (ids, active) => apiFetch(API_BASE + '/admin/domains/batch/toggle', { method: 'PUT', body: JSON.stringify({ ids, active }) }),
     batchDeleteDomains: (ids, delete_cloudflare) => apiFetch(API_BASE + '/admin/domains/batch/delete', { method: 'PUT', body: JSON.stringify({ ids, delete_cloudflare }) }),
     batchToggleDomainsSubdomain: (ids, enabled) => apiFetch(API_BASE + '/admin/domains/batch/subdomain', { method: 'PUT', body: JSON.stringify({ ids, enabled }) }),
     cfCreateDomain: body => apiFetch(API_BASE + '/admin/domains/cf-create', { method: 'POST', body: JSON.stringify(body) }),
+    listHostnames:  () => apiFetch(API_BASE + '/admin/hostnames').then(d => Array.isArray(d) ? d : (d.hostnames || [])),
+    addHostname:    body => apiFetch(API_BASE + '/admin/hostnames', { method: 'POST', body: JSON.stringify(body) }).then(d => d.hostname || d),
+    updateHostname: (id, body) => apiFetch(API_BASE + '/admin/hostnames/' + id, { method: 'PUT', body: JSON.stringify(body) }).then(d => d.hostname || d),
+    toggleHostname: (id, active) => apiFetch(API_BASE + '/admin/hostnames/' + id + '/toggle', { method: 'PUT', body: JSON.stringify({ active }) }),
+    deleteHostname: id => apiFetch(API_BASE + '/admin/hostnames/' + id, { method: 'DELETE' }),
     getSettings:    () => apiFetch(API_BASE + '/admin/settings'),
     saveSettings: body => apiFetch(API_BASE + '/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
     testTelegram: () => apiFetch(API_BASE + '/admin/settings/tg/test', { method: 'POST' }),
@@ -2069,7 +2116,7 @@ async function renderAdminDomains(container) {
                     ${buildDataLabel('操作', `
                       <div class="table-actions">
                         <span class="badge badge-gold" id="pending-status-${d.id}">⏳ 检测中</span>
-                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}',${d.hostname_id ?? 'null'},'${escHtml(d.hostname || '')}')">Hostname</button>
                         <button class="btn btn-ghost btn-sm" onclick="showEditDomainSubdomainModal(${d.id},'${escHtml(d.domain)}',${d.subdomain_enabled ? 'true' : 'false'},${Number(d.subdomain_random_length || 5)})">Subdomain</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmDeleteDomain(${d.id},'${escHtml(d.domain)}')">✕</button>
@@ -2106,7 +2153,7 @@ async function renderAdminDomains(container) {
                       : '<span class="badge badge-gray">○ 停用</span>')}
                     ${buildDataLabel('操作', `
                       <div class="table-actions">
-                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}','${escHtml(d.hostname || '')}')">Hostname</button>
+                        <button class="btn btn-ghost btn-sm" onclick="showEditDomainHostnameModal(${d.id},'${escHtml(d.domain)}',${d.hostname_id ?? 'null'},'${escHtml(d.hostname || '')}')">Hostname</button>
                         <button class="btn btn-ghost btn-sm" onclick="showEditDomainSubdomainModal(${d.id},'${escHtml(d.domain)}',${d.subdomain_enabled ? 'true' : 'false'},${Number(d.subdomain_random_length || 5)})">Subdomain</button>
                         <button class="btn btn-ghost btn-sm" onclick="toggleDomain(${d.id},${!d.is_active})">${d.is_active ? '停用' : '启用'}</button>
                         <button class="btn btn-danger btn-sm" onclick="confirmCFDeleteDomain(${d.id},'${escHtml(d.domain)}')">CF 删除</button>
@@ -2225,12 +2272,8 @@ window.showAddDomainModal = function() {
   if (old) old.remove();
 
   let serverIP = '';
-  let serverHostname = '';
-  api.publicSettings().then(s => {
-    serverIP = s.smtp_server_ip || '';
-    serverHostname = s.smtp_hostname || '';
-    updateDnsHint();
-  }).catch(() => {});
+  let defaultHostname = '';
+  let activeHostnames = [];
 
   const overlay = el('div', 'modal-overlay');
   overlay.innerHTML = `
@@ -2246,8 +2289,8 @@ window.showAddDomainModal = function() {
         </div>
         <div class="form-group" style="margin-bottom:0.5rem">
           <label class="form-label">域名 Hostname（可选）</label>
-          <input class="form-input" id="add-hostname-inp" placeholder="mail.example.com" />
-          <div class="form-hint">留空时回退系统级 smtp_hostname；若也为空则使用 mail.&lt;domain&gt;</div>
+          <select class="form-input" id="add-hostname-sel"></select>
+          <div class="form-hint">从已录入的 hostname 中选择；不指定时跟随默认 hostname 或回退 <code>mail.&lt;domain&gt;</code></div>
         </div>
         <div class="toggle-wrap" style="margin:0.4rem 0 0.6rem">
           <label class="toggle">
@@ -2281,19 +2324,29 @@ window.showAddDomainModal = function() {
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
   const inp = overlay.querySelector('#add-domain-inp');
-  const hostnameInp = overlay.querySelector('#add-hostname-inp');
+  const hostnameSel = overlay.querySelector('#add-hostname-sel');
   const subEnabledInp = overlay.querySelector('#add-subdomain-enabled');
   inp?.addEventListener('keydown', e => { if (e.key === 'Enter') window.doAddDomainCheck(false); });
   inp?.addEventListener('input', updateDnsHint);
-  hostnameInp?.addEventListener('input', updateDnsHint);
+  hostnameSel?.addEventListener('change', updateDnsHint);
   subEnabledInp?.addEventListener('change', updateDnsHint);
+
+  function renderHostnameOptions() {
+    if (!hostnameSel) return;
+    hostnameSel.innerHTML = buildHostnameOptions(activeHostnames, '', {
+      allowBlank: true,
+      blankLabel: defaultHostname
+        ? `跟随默认（当前 ${defaultHostname}）`
+        : '不指定（回退 mail.<domain>）',
+    });
+  }
 
   function updateDnsHint() {
     const d = (inp?.value || '').trim() || 'example.com';
     const ip = serverIP || '&lt;服务器IP&gt;';
-    const customHostname = (hostnameInp?.value || '').trim();
-    const hn = customHostname || serverHostname || 'mail.' + d;
-    const hasHostname = !!(customHostname || serverHostname);
+    const selectedHostname = findHostnameById(activeHostnames, hostnameSel?.value)?.hostname || '';
+    const hn = selectedHostname || defaultHostname || 'mail.' + d;
+    const hasHostname = !!(selectedHostname || defaultHostname);
     const subEnabled = !!subEnabledInp?.checked;
     const tbody = document.getElementById('add-dns-rows');
     if (!tbody) return;
@@ -2304,11 +2357,22 @@ window.showAddDomainModal = function() {
       ${subEnabled ? `<tr style="background:rgba(34,197,94,.06)"><td style="padding:2px 5px">MX</td><td style="padding:2px 5px;font-family:monospace">*</td><td style="padding:2px 5px;font-family:monospace">${escHtml(hn)}</td><td style="padding:2px 5px">10</td></tr>` : ''}
     `;
   }
+  api.publicSettings().then(s => {
+    serverIP = s.smtp_server_ip || '';
+    defaultHostname = getDefaultHostnameFromSettings(s);
+    activeHostnames = getActiveHostnamesFromSettings(s);
+    renderHostnameOptions();
+    updateDnsHint();
+  }).catch(() => {
+    renderHostnameOptions();
+    updateDnsHint();
+  });
+  renderHostnameOptions();
   updateDnsHint();
 
   window.doAddDomainCheck = async function(force) {
     const domain = (inp?.value || '').trim().toLowerCase();
-    const hostname = (hostnameInp?.value || '').trim();
+    const hostnameId = Number(hostnameSel?.value || 0) || 0;
     const subEnabled = !!subEnabledInp?.checked;
     if (!domain) { toast('请输入域名', 'warn'); return; }
     const checkBtn = document.getElementById('add-check-btn');
@@ -2320,7 +2384,7 @@ window.showAddDomainModal = function() {
       if (force) {
         // 强制直接添加（跳过 MX 检测）
         const body = { domain, subdomain_enabled: subEnabled };
-        if (hostname) body.hostname = hostname;
+        if (hostnameId > 0) body.hostname_id = hostnameId;
         const r = await api.admin.addDomain(body);
         showDnsInstructions(domain, r);
         overlay.remove();
@@ -2331,7 +2395,7 @@ window.showAddDomainModal = function() {
       let r;
       try {
         const body = { domain, force: false, subdomain_enabled: subEnabled };
-        if (hostname) body.hostname = hostname;
+        if (hostnameId > 0) body.hostname_id = hostnameId;
         r = await api.admin.mxImport(body);
         // MX 通过 → 已添加
         const step1 = document.getElementById('add-step1');
@@ -2433,7 +2497,22 @@ window.confirmCFDeleteDomain = function(id, name) {
   });
 };
 
-window.showEditDomainHostnameModal = function(id, domain, hostname) {
+window.showEditDomainHostnameModal = async function(id, domain, hostnameId, hostname) {
+  let hostnames = [];
+  try {
+    hostnames = await api.admin.listHostnames();
+  } catch (e) {
+    toast('读取 Hostname 列表失败：' + e.message, 'error');
+    return;
+  }
+
+  const currentId = Number(hostnameId) || 0;
+  const hasCurrent = currentId > 0 && !!findHostnameById(hostnames, currentId);
+  const options = buildHostnameOptions(hostnames, hasCurrent ? currentId : '', {
+    allowBlank: true,
+    blankLabel: hostname ? `跟随默认（当前绑定 ${hostname}）` : '跟随默认 Hostname',
+  });
+
   showModal('编辑域名 Hostname', `
     <div class="form-group">
       <label class="form-label">域名</label>
@@ -2441,13 +2520,14 @@ window.showEditDomainHostnameModal = function(id, domain, hostname) {
     </div>
     <div class="form-group">
       <label class="form-label">Hostname（可选）</label>
-      <input class="form-input" id="edit-domain-hostname" value="${escHtml(hostname || '')}" placeholder="mail.example.com" />
-      <div class="form-hint">留空时回退系统级 smtp_hostname 或 mail.&lt;domain&gt;</div>
+      <select class="form-input" id="edit-domain-hostname">${options}</select>
+      <div class="form-hint">从已录入的 hostname 中选择；留空则跟随默认 hostname。</div>
     </div>
   `, async () => {
     try {
-      const value = ($('edit-domain-hostname')?.value || '').trim();
-      await api.admin.updateDomainHostname(id, value);
+      const value = Number($('edit-domain-hostname')?.value || 0) || 0;
+      const body = value > 0 ? { hostname_id: value } : { hostname: '' };
+      await api.admin.updateDomainHostname(id, body);
       toast('Hostname 已更新', 'success');
       navigate('admin-domains');
     } catch(e) { toast('更新失败: ' + e.message, 'error'); return false; }
@@ -2519,6 +2599,7 @@ window.confirmBatchDeleteDomains = function(deleteCloudflare) {
 window.showCFCreateModal = function() {
   const old = document.querySelector('.modal-overlay');
   if (old) old.remove();
+  let activeHostnames = [];
   const overlay = el('div', 'modal-overlay');
   overlay.innerHTML = `
     <div class="modal" style="max-width:560px">
@@ -2530,7 +2611,8 @@ window.showCFCreateModal = function() {
       </div>
       <div class="form-group">
         <label class="form-label">MX Hostname</label>
-        <input class="form-input" id="cfc-hostname" placeholder="mail.example.com" />
+        <select class="form-input" id="cfc-hostname"></select>
+        <div class="form-hint">从系统里已录入并启用的 hostname 中选择一个作为 MX 目标。</div>
       </div>
       <div class="form-group">
         <label class="form-label">Cloudflare Zone（可选）</label>
@@ -2554,17 +2636,33 @@ window.showCFCreateModal = function() {
   `;
   document.body.appendChild(overlay);
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const hostnameSel = overlay.querySelector('#cfc-hostname');
+  const renderHostnameOptions = () => {
+    if (!hostnameSel) return;
+    if (!activeHostnames.length) {
+      hostnameSel.innerHTML = `<option value="">请先在系统设置中添加并启用 Hostname</option>`;
+      hostnameSel.disabled = true;
+      return;
+    }
+    hostnameSel.disabled = false;
+    hostnameSel.innerHTML = buildHostnameOptions(activeHostnames, activeHostnames[0]?.id || '', { allowBlank: false });
+  };
+  api.hostnames().then(list => {
+    activeHostnames = normalizeHostnameList(list).filter(item => item.is_active);
+    renderHostnameOptions();
+  }).catch(() => renderHostnameOptions());
+  renderHostnameOptions();
   overlay.querySelector('#cfc-submit').addEventListener('click', async () => {
     const btn = overlay.querySelector('#cfc-submit');
     const domain = (overlay.querySelector('#cfc-domain')?.value || '').trim().toLowerCase();
-    const hostname = (overlay.querySelector('#cfc-hostname')?.value || '').trim();
+    const hostnameId = Number(overlay.querySelector('#cfc-hostname')?.value || 0) || 0;
     const zone = (overlay.querySelector('#cfc-zone')?.value || '').trim();
     const subEnabled = !!overlay.querySelector('#cfc-subdomain-enabled')?.checked;
-    if (!domain || !hostname) { toast('请填写域名和 Hostname', 'warn'); return; }
+    if (!domain || !hostnameId) { toast('请选择域名和 Hostname', 'warn'); return; }
     btn.disabled = true;
     btn.textContent = '创建中...';
     try {
-      const body = { domain, hostname, subdomain_enabled: subEnabled };
+      const body = { domain, hostname_id: hostnameId, subdomain_enabled: subEnabled };
       if (zone) body.zone = zone;
       await api.admin.cfCreateDomain(body);
       toast(subEnabled ? 'Cloudflare MX（含通配）已创建，域名已入池' : 'Cloudflare MX 已创建，域名已入池', 'success');
@@ -2581,11 +2679,19 @@ window.showCFCreateModal = function() {
 // ─── Admin: 系统设置 ─────────────────────────────────────────
 async function renderAdminSettings(container) {
   let settings = {};
-  try { settings = await api.admin.getSettings(); } catch {}
+  let hostnameItems = [];
+  try {
+    [settings, hostnameItems] = await Promise.all([
+      api.admin.getSettings().catch(() => ({})),
+      api.admin.listHostnames().catch(() => []),
+    ]);
+  } catch {}
 
   const regOpen    = settings.registration_open === 'true' || settings.registration_open === true;
   const smtpIp      = settings.smtp_server_ip       || '';
-  const smtpHostname = settings.smtp_hostname         || '';
+  const smtpHostname = getDefaultHostnameFromSettings(settings);
+  const hostnames = normalizeHostnameList(hostnameItems);
+  const activeHostnames = hostnames.filter(item => item.is_active);
   const siteTitle  = settings.site_title            || 'TempMail';
   const defDomain  = settings.default_domain        || '';
   const ttlMins    = settings.mailbox_ttl_minutes   || '30';
@@ -2599,6 +2705,22 @@ async function renderAdminSettings(container) {
   const tgChatId = settings.tg_chat_id || '';
   const tgThreadId = settings.tg_message_thread_id || '';
   const tgForwardMode = settings.tg_forward_mode || 'all_with_attachments';
+  const hostnameRows = hostnames.length === 0
+    ? `<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">还没有录入任何 Hostname</td></tr>`
+    : hostnames.map(item => `
+        <tr>
+          ${buildDataLabel('Hostname', `<span style="font-family:var(--font-mono)">${escHtml(item.hostname)}</span>`)}
+          ${buildDataLabel('状态', item.is_active ? '<span class="badge badge-green">● 启用</span>' : '<span class="badge badge-gray">○ 停用</span>')}
+          ${buildDataLabel('绑定域名', String(item.domain_count || 0))}
+          ${buildDataLabel('操作', `
+            <div class="table-actions">
+              <button class="btn btn-ghost btn-sm" onclick="editHostnameSetting(${item.id},'${escHtml(item.hostname)}')">编辑</button>
+              <button class="btn btn-ghost btn-sm" onclick="toggleHostnameSetting(${item.id},${item.is_active ? 'false' : 'true'})">${item.is_active ? '停用' : '启用'}</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteHostnameSetting(${item.id},'${escHtml(item.hostname)}',${Number(item.domain_count || 0)})">删除</button>
+            </div>
+          `)}
+        </tr>
+      `).join('');
 
   function inputRow(id, label, value, hint, placeholder = '', settingKey = '') {
     const key = settingKey || id.replace(/^input-/, '').replace(/-/g, '_');
@@ -2629,7 +2751,7 @@ async function renderAdminSettings(container) {
   }
 
   container.innerHTML = `
-    <div class="card" style="max-width:640px">
+    <div class="card" style="max-width:980px">
       <div class="card-header"><div class="card-title">⚙ 系统设置</div></div>
       <div class="card-body" style="display:flex;flex-direction:column;gap:0.1rem">
 
@@ -2665,8 +2787,20 @@ async function renderAdminSettings(container) {
         ${inputRow('input-smtp-ip', 'SMTP 服务器公网 IP', smtpIp, '用于生成 SPF DNS 配置提示', '0.0.0.0', 'smtp_server_ip')}
         <div class="divider"></div>
 
-        <!-- SMTP Hostname -->
-        ${inputRow('input-smtp-hostname', '邮件服务器主机名', smtpHostname, '用作 MX 记录目标（如 mail.yourdomain.com）。设置后用户添加域名只需一条 MX 记录，无需额外 A 记录。', 'mail.yourdomain.com', 'smtp_hostname')}
+        <div class="form-group">
+          <label class="form-label">Hostname 管理</label>
+          <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap">
+            <input class="form-input" id="input-new-hostname" placeholder="mail.yourdomain.com" style="flex:1;min-width:260px" />
+            <button class="btn btn-primary btn-sm" onclick="addHostnameSetting()">+ 添加 Hostname</button>
+          </div>
+          <div class="form-hint">这里维护可选的 MX Hostname。域名添加、MX 验证、Cloudflare 创建和域名编辑都会从这里下拉选择。</div>
+          <div class="table-wrap" style="margin-top:0.75rem">
+            <table class="admin-table stack-table">
+              <thead><tr><th>Hostname</th><th>状态</th><th>绑定域名</th><th>操作</th></tr></thead>
+              <tbody>${hostnameRows}</tbody>
+            </table>
+          </div>
+        </div>
         <div class="divider"></div>
 
         <!-- 默认邮箱域名 -->
@@ -2751,7 +2885,8 @@ async function renderAdminSettings(container) {
           <strong>服务信息</strong>
           <p style="margin-top:0.5rem;line-height:2">
             SMTP IP:&nbsp;<code>${escHtml(smtpIp||'<未设置>')}</code><br>
-            邮件主机名:&nbsp;<code>${escHtml(smtpHostname||'<未设置>')}</code><br>
+            默认 Hostname:&nbsp;<code>${escHtml(smtpHostname||'<未设置>')}</code><br>
+            已启用 Hostname:&nbsp;<code>${escHtml(activeHostnames.map(item => item.hostname).join(', ') || '<无>')}</code><br>
             API:&nbsp;<code>${window.location.origin}/api</code><br>
             前端:&nbsp;<code>${window.location.origin}</code>
           </p>
@@ -2785,6 +2920,66 @@ window.saveSetting = async function(inputId, settingKey) {
 
 // 兼容旧调用
 window.saveSmtpIp = async function() { await window.saveSetting('input-smtp-ip', 'smtp_server_ip'); };
+
+window.addHostnameSetting = async function() {
+  const value = ($('input-new-hostname')?.value || '').trim();
+  if (!value) { toast('请输入 Hostname', 'warn'); return; }
+  try {
+    await api.admin.addHostname({ hostname: value });
+    toast('Hostname 已添加', 'success');
+    navigate('admin-settings');
+  } catch (e) {
+    toast('添加失败：' + e.message, 'error');
+  }
+};
+
+window.editHostnameSetting = function(id, hostname) {
+  showModal('编辑 Hostname', `
+    <div class="form-group">
+      <label class="form-label">Hostname</label>
+      <input class="form-input" id="edit-hostname-value" value="${escHtml(hostname || '')}" placeholder="mail.yourdomain.com" />
+      <div class="form-hint">修改后，已绑定该 Hostname 的域名会同步更新。</div>
+    </div>
+  `, async () => {
+    const value = ($('edit-hostname-value')?.value || '').trim();
+    if (!value) { toast('请输入 Hostname', 'warn'); return false; }
+    try {
+      await api.admin.updateHostname(id, { hostname: value });
+      toast('Hostname 已更新', 'success');
+      navigate('admin-settings');
+    } catch (e) {
+      toast('更新失败：' + e.message, 'error');
+      return false;
+    }
+  });
+};
+
+window.toggleHostnameSetting = async function(id, active) {
+  try {
+    await api.admin.toggleHostname(id, !!active);
+    toast(active ? 'Hostname 已启用' : 'Hostname 已停用', 'success');
+    navigate('admin-settings');
+  } catch (e) {
+    toast('操作失败：' + e.message, 'error');
+  }
+};
+
+window.deleteHostnameSetting = function(id, hostname, domainCount) {
+  const extra = Number(domainCount || 0) > 0
+    ? `<p style="font-size:0.8rem;color:var(--clr-danger);margin-top:0.5rem">⚠ 删除后会把绑定它的 ${Number(domainCount)} 个域名清空为“跟随默认 Hostname”。</p>`
+    : '';
+  showModal('删除 Hostname', `<p>确定删除 Hostname <strong>${escHtml(hostname)}</strong>？</p>${extra}`, async () => {
+    try {
+      const res = await api.admin.deleteHostname(id);
+      const cleared = Number(res.cleared_domains || 0);
+      toast(cleared > 0 ? `Hostname 已删除，并清空了 ${cleared} 个域名的绑定` : 'Hostname 已删除', 'success');
+      navigate('admin-settings');
+    } catch (e) {
+      toast('删除失败：' + e.message, 'error');
+      return false;
+    }
+  });
+};
 
 window.saveRegistrationSetting = async function(enabled) {
   try {
@@ -2882,6 +3077,8 @@ window.showMXRegisterModal = function() {
   const isAdmin = !!state.account?.is_admin;
   const old = document.querySelector('.modal-overlay');
   if (old) old.remove();
+  let defaultHostname = '';
+  let activeHostnames = [];
   const overlay = el('div', 'modal-overlay');
   overlay.innerHTML = `
     <div class="modal" style="max-width:560px">
@@ -2895,12 +3092,11 @@ window.showMXRegisterModal = function() {
         <label class="form-label">域名（如 example.com）</label>
         <input class="form-input" id="mxr-domain" placeholder="example.com" autofocus />
       </div>
-      ${isAdmin ? `
       <div class="form-group">
         <label class="form-label">Hostname（可选）</label>
-        <input class="form-input" id="mxr-hostname" placeholder="mail.example.com" />
-        <div class="form-hint">管理员可为该域名单独指定 MX Hostname；留空则沿用全局默认。</div>
-      </div>` : ''}
+        <select class="form-input" id="mxr-hostname"></select>
+        <div class="form-hint">从已录入的 hostname 中选择；留空则跟随默认 hostname 或回退 <code>mail.&lt;domain&gt;</code>。</div>
+      </div>
       <div class="toggle-wrap" style="margin:0.4rem 0 0.6rem">
         <label class="toggle">
           <input type="checkbox" id="mxr-sub-enabled">
@@ -2935,18 +3131,36 @@ window.showMXRegisterModal = function() {
 
   // 实时更新 DNS 提示
   const inp = overlay.querySelector('#mxr-domain');
+  const hostnameSel = overlay.querySelector('#mxr-hostname');
   const subEnabledInp = overlay.querySelector('#mxr-sub-enabled');
   const subLengthWrap = overlay.querySelector('#mxr-sub-length-wrap');
   inp?.addEventListener('keydown', e => { if (e.key === 'Enter') submitMXRegister(); });
+  hostnameSel?.addEventListener('change', () => {});
   subEnabledInp?.addEventListener('change', () => {
     if (subLengthWrap) subLengthWrap.style.display = subEnabledInp.checked ? '' : 'none';
   });
+
+  const renderHostnameOptions = () => {
+    if (!hostnameSel) return;
+    hostnameSel.innerHTML = buildHostnameOptions(activeHostnames, '', {
+      allowBlank: true,
+      blankLabel: defaultHostname
+        ? `跟随默认（当前 ${defaultHostname}）`
+        : '不指定（回退 mail.<domain>）',
+    });
+  };
+  api.publicSettings().then(s => {
+    defaultHostname = getDefaultHostnameFromSettings(s);
+    activeHostnames = getActiveHostnamesFromSettings(s);
+    renderHostnameOptions();
+  }).catch(() => renderHostnameOptions());
+  renderHostnameOptions();
 
   overlay.querySelector('#mxr-submit').addEventListener('click', submitMXRegister);
 
   async function submitMXRegister() {
     const domain = (inp?.value || '').trim().toLowerCase();
-    const hostname = (overlay.querySelector('#mxr-hostname')?.value || '').trim();
+    const hostnameId = Number(overlay.querySelector('#mxr-hostname')?.value || 0) || 0;
     const subEnabled = !!overlay.querySelector('#mxr-sub-enabled')?.checked;
     const subLengthRaw = Number(overlay.querySelector('#mxr-sub-length')?.value || 5);
     const subLength = Number.isFinite(subLengthRaw) ? Math.max(2, Math.min(8, Math.floor(subLengthRaw))) : 5;
@@ -2961,7 +3175,7 @@ window.showMXRegisterModal = function() {
     const domainListPage = state.account?.is_admin ? 'admin-domains' : 'domains-guide';
     try {
       const body = { domain };
-      if (isAdmin && hostname) body.hostname = hostname;
+      if (hostnameId > 0) body.hostname_id = hostnameId;
       if (subEnabled) {
         body.subdomain_enabled = true;
         body.subdomain_random_length = subLength;
@@ -3145,17 +3359,21 @@ curl -s -X DELETE ${base}/api/mailboxes/$MAILBOX_ID \\
     {
       title: '☁ 8. Cloudflare / 域名管理（管理员）',
       desc: '新增的管理员域名接口示例',
-      code: `# 更新域名 hostname
+      code: `# 查看可选 hostname 列表
+curl -s ${base}/api/admin/hostnames \\
+  -H "Authorization: Bearer ${key}"
+
+# 更新域名 hostname
 curl -s -X PUT ${base}/api/admin/domains/12/hostname \\
   -H "Authorization: Bearer ${key}" \\
   -H "Content-Type: application/json" \\
-  -d '{"hostname":"mail.example.com"}'
+  -d '{"hostname_id":1}'
 
 # 通过 Cloudflare 创建 MX 并加入域名池
 curl -s -X POST ${base}/api/admin/domains/cf-create \\
   -H "Authorization: Bearer ${key}" \\
   -H "Content-Type: application/json" \\
-  -d '{"domain":"sub.example.com","hostname":"mail.example.com"}'
+  -d '{"domain":"sub.example.com","hostname_id":1}'
 
 # 删除 Cloudflare MX 并删除本地域名
 curl -s -X DELETE ${base}/api/admin/domains/12/cf \\

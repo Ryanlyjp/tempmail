@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"tempmail/middleware"
@@ -29,13 +30,15 @@ func (h *SettingHandler) GetPublic(c *gin.Context) {
 	}
 	siteTitle, _ := h.store.GetSetting(c.Request.Context(), "site_title")
 	smtpIP, _ := h.store.GetSetting(c.Request.Context(), "smtp_server_ip")
-	smtpHostname, _ := h.store.GetSetting(c.Request.Context(), "smtp_hostname")
+	smtpHostname, _ := h.store.GetDefaultHostname(c.Request.Context())
+	hostnames, _ := h.store.ListHostnames(c.Request.Context(), true)
 	announce, _ := h.store.GetSetting(c.Request.Context(), "announcement")
 	c.JSON(http.StatusOK, gin.H{
 		"registration_open": regOpen == "true",
 		"site_title":        siteTitle,
 		"smtp_server_ip":    smtpIP,
 		"smtp_hostname":     smtpHostname,
+		"hostnames":         hostnames,
 		"announcement":      announce,
 	})
 }
@@ -46,6 +49,9 @@ func (h *SettingHandler) AdminGetAll(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if smtpHostname, err := h.store.GetDefaultHostname(c.Request.Context()); err == nil {
+		settings["smtp_hostname"] = smtpHostname
 	}
 	c.JSON(http.StatusOK, settings)
 }
@@ -87,6 +93,15 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		if !allowed[k] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting key: " + k})
 			return
+		}
+		if k == "smtp_hostname" {
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v != "" {
+				if _, err := h.store.UpsertHostname(c.Request.Context(), v); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+			}
 		}
 		if err := h.store.SetSetting(c.Request.Context(), k, v); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -18,6 +18,7 @@
 - 支持仅转发带附件邮件、仅通知带附件邮件
 - TG 文本会标明来自哪个邮箱
 - 支持 catch-all 自动建箱
+- 支持多个 hostname 统一管理、启停、编辑、删除
 - 支持多级子域名邮箱创建
 - 支持域名 MX 自动验证、健康巡检、批量启停/删除
 - 支持 Cloudflare MX 自动创建 / 删除
@@ -206,9 +207,10 @@ http://<服务器IP>
 
 管理员还可以：
 
+- 维护 hostname 池（新增 / 编辑 / 启用 / 停用 / 删除）
 - 手动添加域名
 - 强制导入域名
-- 更新每个域名的 `hostname`
+- 为每个域名下拉选择 `hostname`
 - 批量启用 / 停用 / 删除域名
 - 批量开关多级子域名
 - 通过 Cloudflare 创建 / 删除 MX
@@ -217,7 +219,7 @@ http://<服务器IP>
 域名 `hostname` 的优先级：
 
 1. 域名自身 `hostname`
-2. 系统设置 `smtp_hostname`
+2. 已启用 hostname 列表中的默认 hostname（按创建时间最早的启用项）
 3. 默认回退 `mail.<domain>`
 
 ---
@@ -318,11 +320,15 @@ curl -s "$BASE/api/mailboxes/<mailbox-id>/otp/latest" \
 curl -s "$BASE/api/domains?status=active&hostname=mail.example.com&q=example" \
   -H "Authorization: Bearer $KEY"
 
+# 查看当前可选的 hostname 下拉列表
+curl -s "$BASE/api/hostnames" \
+  -H "Authorization: Bearer $KEY"
+
 # 普通用户提交域名验证
 curl -s -X POST "$BASE/api/domains/submit" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"domain":"example.com"}'
+  -d '{"domain":"example.com","hostname_id":1}'
 
 # 查询域名状态
 curl -s "$BASE/api/domains/<domain-id>/status" \
@@ -351,29 +357,55 @@ curl -s -X PUT "$BASE/api/admin/settings" \
 curl -s -X POST "$BASE/api/admin/settings/tg/test" \
   -H "Authorization: Bearer $KEY"
 
+# 查看全部 hostname
+curl -s "$BASE/api/admin/hostnames" \
+  -H "Authorization: Bearer $KEY"
+
+# 新增 hostname
+curl -s -X POST "$BASE/api/admin/hostnames" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"hostname":"mail.example.com"}'
+
+# 编辑 hostname
+curl -s -X PUT "$BASE/api/admin/hostnames/1" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"hostname":"mx1.example.com"}'
+
+# 启用 / 停用 hostname
+curl -s -X PUT "$BASE/api/admin/hostnames/1/toggle" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"active":false}'
+
+# 删除 hostname
+curl -s -X DELETE "$BASE/api/admin/hostnames/1" \
+  -H "Authorization: Bearer $KEY"
+
 # 手动添加域名
 curl -s -X POST "$BASE/api/admin/domains" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"domain":"example.com","hostname":"mail.example.com"}'
+  -d '{"domain":"example.com","hostname_id":1}'
 
 # 更新域名 hostname
 curl -s -X PUT "$BASE/api/admin/domains/<domain-id>/hostname" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"hostname":"mail.example.com"}'
+  -d '{"hostname_id":1}'
 
 # MX 导入
 curl -s -X POST "$BASE/api/admin/domains/mx-import" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"domain":"example.com","hostname":"mail.example.com","force":false}'
+  -d '{"domain":"example.com","hostname_id":1,"force":false}'
 
 # MX 自动注册
 curl -s -X POST "$BASE/api/admin/domains/mx-register" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"domain":"example.com","hostname":"mail.example.com"}'
+  -d '{"domain":"example.com","hostname_id":1}'
 ```
 
 ---
@@ -381,8 +413,9 @@ curl -s -X POST "$BASE/api/admin/domains/mx-register" \
 ## 运行与迁移说明
 
 - API 启动时会自动执行一组 schema compatibility 检查
-- 常见新增字段（如 `expires_at`、`is_favorite`、`tg_forward_enabled`、TG 设置项）会自动补齐
+- 常见新增字段（如 `expires_at`、`is_favorite`、`tg_forward_enabled`、`hostname_id`、TG 设置项）会自动补齐
 - 一般不需要再手工跑旧版增量 SQL 才能启动
+- 如果是老库手工迁移，可执行 `sql/migrate_v8.sql` 把旧的 `smtp_hostname` / 域名 `hostname` 导入到新的 hostname 池
 - 附件解析基于历史 `raw_message`，不需要额外迁移已有邮件内容
 
 ---

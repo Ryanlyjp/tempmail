@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"tempmail/store"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 )
 
 type DomainHandler struct {
@@ -33,10 +35,18 @@ func (h *DomainHandler) getServerIP(ctx context.Context) string {
 }
 
 func (h *DomainHandler) getServerHostname(ctx context.Context) string {
-	if hn, err := h.store.GetSetting(ctx, "smtp_hostname"); err == nil && hn != "" {
+	if hn, err := h.store.GetDefaultHostname(ctx); err == nil && hn != "" {
 		return hn
 	}
 	return h.cfgHostname
+}
+
+func (h *DomainHandler) resolveRequestedHostname(ctx context.Context, hostnameID *int, hostname string, allowCreate bool) (*model.Hostname, error) {
+	resolved, err := h.store.ResolveHostname(ctx, hostnameID, hostname, allowCreate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("hostname 不存在，请先在系统设置中录入")
+	}
+	return resolved, err
 }
 
 func (h *DomainHandler) getEffectiveHostname(ctx context.Context, domain, domainHostname string) string {
@@ -88,6 +98,7 @@ func (h *DomainHandler) getCFClient(ctx context.Context) (*cf.Client, string, er
 func (h *DomainHandler) Add(c *gin.Context) {
 	var req struct {
 		Domain                string `json:"domain" binding:"required"`
+		HostnameID            *int   `json:"hostname_id"`
 		Hostname              string `json:"hostname"`
 		SubdomainEnabled      bool   `json:"subdomain_enabled"`
 		SubdomainRandomLength int    `json:"subdomain_random_length"`
@@ -100,8 +111,17 @@ func (h *DomainHandler) Add(c *gin.Context) {
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
+	resolvedHostname, err := h.resolveRequestedHostname(c.Request.Context(), req.HostnameID, req.Hostname, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resolvedHostname != nil {
+		req.Hostname = resolvedHostname.Hostname
+		req.HostnameID = &resolvedHostname.ID
+	}
 
-	domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
+	domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "domain already exists: " + err.Error()})
 		return
@@ -188,14 +208,28 @@ func (h *DomainHandler) UpdateHostname(c *gin.Context) {
 	}
 
 	var req struct {
-		Hostname string `json:"hostname"`
+		HostnameID *int   `json:"hostname_id"`
+		Hostname   string `json:"hostname"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := h.store.UpdateDomainHostname(c.Request.Context(), id, strings.TrimSpace(req.Hostname)); err != nil {
+	resolvedHostname, err := h.resolveRequestedHostname(c.Request.Context(), req.HostnameID, req.Hostname, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resolvedHostname != nil {
+		req.Hostname = resolvedHostname.Hostname
+		req.HostnameID = &resolvedHostname.ID
+	} else {
+		req.Hostname = ""
+		req.HostnameID = nil
+	}
+
+	if err := h.store.UpdateDomainHostname(c.Request.Context(), id, req.HostnameID, strings.TrimSpace(req.Hostname)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -206,6 +240,7 @@ func (h *DomainHandler) UpdateHostname(c *gin.Context) {
 func (h *DomainHandler) MXImport(c *gin.Context) {
 	var req struct {
 		Domain                string `json:"domain" binding:"required"`
+		HostnameID            *int   `json:"hostname_id"`
 		Hostname              string `json:"hostname"`
 		Force                 bool   `json:"force"`
 		SubdomainEnabled      bool   `json:"subdomain_enabled"`
@@ -218,6 +253,15 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
+	resolvedHostname, err := h.resolveRequestedHostname(c.Request.Context(), req.HostnameID, req.Hostname, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resolvedHostname != nil {
+		req.Hostname = resolvedHostname.Hostname
+		req.HostnameID = &resolvedHostname.ID
+	}
 
 	serverIP := h.getServerIP(c.Request.Context())
 	matched, mxHosts, mxStatus := store.CheckDomainMX(req.Domain, serverIP)
@@ -246,7 +290,7 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 		return
 	}
 
-	domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
+	domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "域名已存在"})
@@ -273,6 +317,7 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 func (h *DomainHandler) MXRegister(c *gin.Context) {
 	var req struct {
 		Domain                string `json:"domain" binding:"required"`
+		HostnameID            *int   `json:"hostname_id"`
 		Hostname              string `json:"hostname"`
 		SubdomainEnabled      bool   `json:"subdomain_enabled"`
 		SubdomainRandomLength int    `json:"subdomain_random_length"`
@@ -284,6 +329,15 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
+	resolvedHostname, err := h.resolveRequestedHostname(c.Request.Context(), req.HostnameID, req.Hostname, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resolvedHostname != nil {
+		req.Hostname = resolvedHostname.Hostname
+		req.HostnameID = &resolvedHostname.ID
+	}
 
 	serverIP := h.getServerIP(c.Request.Context())
 	matched, _, mxStatus := store.CheckDomainMX(req.Domain, serverIP)
@@ -293,7 +347,7 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 		wildcardMatched, _, wildcardStatus = store.CheckWildcardMX(req.Domain, serverIP)
 	}
 	if matched && (!req.SubdomainEnabled || wildcardMatched) {
-		domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
+		domain, err := h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 		if err != nil {
 			if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 				existing, gerr := h.store.GetDomainByName(c.Request.Context(), req.Domain)
@@ -328,7 +382,7 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 		return
 	}
 
-	domain, err := h.store.AddDomainPendingWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
+	domain, err := h.store.AddDomainPendingWithOptions(c.Request.Context(), req.Domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -354,6 +408,8 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 func (h *DomainHandler) Submit(c *gin.Context) {
 	var req struct {
 		Domain                string `json:"domain" binding:"required"`
+		HostnameID            *int   `json:"hostname_id"`
+		Hostname              string `json:"hostname"`
 		SubdomainEnabled      bool   `json:"subdomain_enabled"`
 		SubdomainRandomLength int    `json:"subdomain_random_length"`
 	}
@@ -362,7 +418,17 @@ func (h *DomainHandler) Submit(c *gin.Context) {
 		return
 	}
 	c.Request.Body = http.NoBody
+	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
+	resolvedHostname, err := h.resolveRequestedHostname(c.Request.Context(), req.HostnameID, req.Hostname, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resolvedHostname != nil {
+		req.Hostname = resolvedHostname.Hostname
+		req.HostnameID = &resolvedHostname.ID
+	}
 
 	serverIP := h.getServerIP(c.Request.Context())
 	domain := strings.ToLower(strings.TrimSpace(req.Domain))
@@ -373,7 +439,7 @@ func (h *DomainHandler) Submit(c *gin.Context) {
 		wildcardMatched, _, wildcardStatus = store.CheckWildcardMX(domain, serverIP)
 	}
 	if matched && (!req.SubdomainEnabled || wildcardMatched) {
-		d, err := h.store.AddDomainWithOptions(c.Request.Context(), domain, "", req.SubdomainEnabled, req.SubdomainRandomLength)
+		d, err := h.store.AddDomainWithOptions(c.Request.Context(), domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 		if err != nil {
 			if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 				existing, gerr := h.store.GetDomainByName(c.Request.Context(), domain)
@@ -399,7 +465,7 @@ func (h *DomainHandler) Submit(c *gin.Context) {
 		return
 	}
 
-	d, err := h.store.AddDomainPendingWithOptions(c.Request.Context(), domain, "", req.SubdomainEnabled, req.SubdomainRandomLength)
+	d, err := h.store.AddDomainPendingWithOptions(c.Request.Context(), domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -410,8 +476,8 @@ func (h *DomainHandler) Submit(c *gin.Context) {
 		"server_ip":         serverIP,
 		"mx_status":         mxStatus,
 		"message":           fmt.Sprintf("域名 %s 已进入待验证队列，后台每30秒自动检测MX记录，通过后自动加入域名池", domain),
-		"dns_required":      h.buildDNSRecords(c.Request.Context(), domain, ""),
-		"wildcard_required": h.buildWildcardDNSRecords(c.Request.Context(), domain, ""),
+		"dns_required":      h.buildDNSRecords(c.Request.Context(), domain, req.Hostname),
+		"wildcard_required": h.buildWildcardDNSRecords(c.Request.Context(), domain, req.Hostname),
 	}
 	if req.SubdomainEnabled {
 		resp["wildcard_mx_status"] = wildcardStatus
@@ -438,6 +504,7 @@ func (h *DomainHandler) GetStatus(c *gin.Context) {
 		"id":            domain.ID,
 		"domain":        domain.Domain,
 		"hostname":      domain.Hostname,
+		"hostname_id":   domain.HostnameID,
 		"status":        domain.Status,
 		"is_active":     domain.IsActive,
 		"mx_checked_at": domain.MxCheckedAt,
@@ -448,6 +515,7 @@ func (h *DomainHandler) GetStatus(c *gin.Context) {
 func (h *DomainHandler) CFCreate(c *gin.Context) {
 	var req struct {
 		Domain                string `json:"domain" binding:"required"`
+		HostnameID            *int   `json:"hostname_id"`
 		Hostname              string `json:"hostname"`
 		Zone                  string `json:"zone"`
 		SubdomainEnabled      bool   `json:"subdomain_enabled"`
@@ -461,8 +529,20 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.Zone = strings.TrimSpace(req.Zone)
 	req.SubdomainRandomLength = store.ClampSubdomainLength(req.SubdomainRandomLength)
+	resolvedHostname, err := h.resolveRequestedHostname(c.Request.Context(), req.HostnameID, req.Hostname, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resolvedHostname != nil {
+		req.Hostname = resolvedHostname.Hostname
+		req.HostnameID = &resolvedHostname.ID
+	}
 	if req.Hostname == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 hostname（MX 记录目标，如 mail.example.com）"})
+		req.Hostname = h.getServerHostname(c.Request.Context())
+	}
+	if req.Hostname == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请先在系统设置中录入并启用 hostname"})
 		return
 	}
 
@@ -562,9 +642,9 @@ func (h *DomainHandler) CFCreate(c *gin.Context) {
 
 	var domain *model.Domain
 	if skippedCF {
-		domain, err = h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
+		domain, err = h.store.AddDomainWithOptions(c.Request.Context(), req.Domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	} else {
-		domain, err = h.store.AddDomainPendingWithOptions(c.Request.Context(), req.Domain, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
+		domain, err = h.store.AddDomainPendingWithOptions(c.Request.Context(), req.Domain, req.HostnameID, req.Hostname, req.SubdomainEnabled, req.SubdomainRandomLength)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
