@@ -253,11 +253,7 @@ func (h *EmailHandler) LatestOTP(c *gin.Context) {
 		return
 	}
 
-	code := otp.ExtractFromHTML(email.BodyHTML)
-	if code == "" {
-		text := strings.Join([]string{email.BodyText, otp.StripHTML(email.BodyHTML), email.Subject}, "\n")
-		code = otp.Extract(text)
-	}
+	code := extractLatestOTPCode(email)
 	if code == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "otp not found in latest email"})
 		return
@@ -274,6 +270,15 @@ func (h *EmailHandler) LatestOTP(c *gin.Context) {
 			ReceivedAt:  email.ReceivedAt,
 		},
 	})
+}
+
+func extractLatestOTPCode(email *model.Email) string {
+	code := otp.ExtractFromHTML(email.BodyHTML)
+	if code == "" {
+		text := strings.Join([]string{email.BodyText, otp.StripHTML(email.BodyHTML), email.Subject}, "\n")
+		code = otp.Extract(text)
+	}
+	return code
 }
 
 // DELETE /api/mailboxes/:mailbox_id/emails/:id - 删除邮件

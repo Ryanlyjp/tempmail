@@ -240,6 +240,58 @@ Authorization: Bearer tm_xxxxxxxxxxxx
 ?api_key=tm_xxxxxxxxxxxx
 ```
 
+### 分享某个邮箱的最新验证码
+
+如果你想把“某一个邮箱的接码权”单独给别人，而不暴露整账号 API Key，现在可以给该邮箱生成一个只读 OTP 分享链接。
+
+1. 生成、轮换或自定义分享 token
+
+```bash
+curl -fsSL -X POST \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"my-fixed-otp-token"}' \
+  "http://<host>/api/mailboxes/<mailbox_id>/otp-share"
+```
+
+留空请求体或传 `{}` 则自动生成随机 token。
+
+返回里会包含：
+
+- `share.url`: 固定分享链接
+- `share.api_url`: token 鉴权接口地址
+- `share.curl`: 可直接发给对方执行的固定命令
+- `share.token`: 该邮箱专属只读 token
+
+2. 用固定链接取最新验证码
+
+JSON：
+
+```bash
+curl -fsSL "http://<host>/public/otp-share/<token>/latest"
+```
+
+纯文本验证码（更适合脚本）：
+
+```bash
+curl -fsSL "http://<host>/public/otp-share/<token>/latest?format=text"
+```
+
+3. 用分享 token 直接跑命令取码
+
+```bash
+curl -fsSL \
+  -H "Authorization: Bearer <token>" \
+  "http://<host>/public/otp-share/latest?format=text"
+```
+
+说明：
+
+- 这个分享 token 只能读取该邮箱“最新一封邮件”里的 OTP
+- 不能列出邮箱、不能看邮件正文、不能操作其它邮箱
+- 再次 `POST` 同一路径会轮换 token，旧链接立即失效
+- `DELETE /api/mailboxes/<mailbox_id>/otp-share` 可随时停用分享
+
 示例：
 
 ```bash

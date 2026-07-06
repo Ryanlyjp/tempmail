@@ -24,6 +24,13 @@ const state = {
   adminDomainStatus: 'all',
   adminDomainHostname: 'all',
   adminDomainSelection: {},
+  adminOTPShare: {
+    mailboxes: [],
+    mailbox: null,
+    share: null,
+    address: '',
+    token: '',
+  },
 };
 
 // ─── 工具函数 ───────────────────────────────────────────────
@@ -283,12 +290,19 @@ const api = {
     }));
   },
   listMailboxes:   (folder = 'all') => api.listMailboxesPage(1, 20, folder).then(d => d.data),
+  lookupMailboxByAddress: address => apiFetch(API_BASE + '/mailboxes/lookup?address=' + encodeURIComponent(address)).then(d => d.mailbox || d),
   deleteMailbox: id  => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
   setMailboxForward: (id, enabled) => apiFetch(API_BASE + '/mailboxes/' + id + '/forward', {
     method: 'PUT',
     body: JSON.stringify({ enabled: !!enabled }),
   }).then(d => d.mailbox || d),
   latestOTP:      id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp/latest').then(d => d.otp || d),
+  getMailboxOTPShare: id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp-share').then(d => d.share || d),
+  upsertMailboxOTPShare: (id, body) => apiFetch(API_BASE + '/mailboxes/' + id + '/otp-share', {
+    method: 'POST',
+    body: JSON.stringify(body || {}),
+  }).then(d => d.share || d),
+  deleteMailboxOTPShare: id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp-share', { method: 'DELETE' }),
   // 邮件 → 解包 {data:[...]}
   listEmailsPage: (mid, page = 1, size = 20) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails?page=' + page + '&size=' + size).then(d => ({
     data: Array.isArray(d) ? d : (d.data || []),
@@ -1866,49 +1880,242 @@ async function renderDomainsGuide(container) {
 }
 
 // ─── Admin: 账户管理 ─────────────────────────────────────────
+function mergeAdminOTPShareMailboxes(favorites, all) {
+  const merged = [];
+  const seen = new Set();
+  [...(favorites || []), ...(all || [])].forEach(mailbox => {
+    if (!mailbox || !mailbox.id || seen.has(mailbox.id)) return;
+    seen.add(mailbox.id);
+    merged.push(mailbox);
+  });
+  return merged;
+}
+
+function buildAdminOTPShareOptions(mailboxes) {
+  return (mailboxes || []).map(mailbox => {
+    const label = mailbox.is_favorite ? `${mailbox.full_address} ★` : mailbox.full_address;
+    return `<option value="${escHtml(mailbox.full_address)}" label="${escHtml(label)}"></option>`;
+  }).join('');
+}
+
+function buildAdminOTPShareResult() {
+  const current = state.adminOTPShare || {};
+  const mailbox = current.mailbox;
+  const share = current.share;
+  if (!mailbox) {
+    return `
+      <div class="otp-share-empty">
+        输入一个属于当前账号的邮箱地址，或从收藏邮箱建议中选择，然后读取或生成分享。
+      </div>
+    `;
+  }
+
+  const tokenBox = share
+    ? `
+      <div class="form-group">
+        <label class="form-label">分享 Token</label>
+        <div class="code-box">
+          <span>${escHtml(share.token || '—')}</span>
+          <button class="copy-btn" onclick="copyText(${JSON.stringify(share.token || '')})" title="复制">⎘</button>
+        </div>
+      </div>
+    `
+    : '';
+
+  const shareBoxes = share
+    ? `
+      <div class="form-group">
+        <label class="form-label">长链接</label>
+        <div class="code-box">
+          <span>${escHtml(share.url || '—')}</span>
+          <button class="copy-btn" onclick="copyText(${JSON.stringify(share.url || '')})" title="复制">⎘</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">接口命令</label>
+        <div class="code-box">
+          <span>${escHtml(share.curl || '—')}</span>
+          <button class="copy-btn" onclick="copyText(${JSON.stringify(share.curl || '')})" title="复制">⎘</button>
+        </div>
+      </div>
+    `
+    : `
+      <div class="otp-share-empty">
+        该邮箱当前还没有分享配置。你可以留空 token 自动生成，或填一个自定义 token 后保存。
+      </div>
+    `;
+
+  return `
+    <div class="otp-share-result">
+      <div class="otp-share-meta">
+        <span class="badge badge-gold">${mailbox.is_favorite ? '★ 收藏邮箱' : '邮箱已匹配'}</span>
+        <span class="otp-share-address">${escHtml(mailbox.full_address || '—')}</span>
+      </div>
+      ${tokenBox}
+      ${shareBoxes}
+      <div class="form-hint">
+        ${share
+          ? `最近更新：${escHtml(formatDate(share.updated_at))}`
+          : '分享链接只会读取该邮箱最新一封邮件里的 OTP，不会暴露账号 API Key。'}
+      </div>
+    </div>
+  `;
+}
+
 async function renderAdminAccounts(container) {
   const actions = $('topbar-actions');
   if (actions) {
     actions.innerHTML = `<button class="btn btn-primary btn-sm" onclick="showCreateAccountModal()">+ 创建账户</button>`;
   }
 
-  const accounts = await api.admin.listAccounts();
+  const [accounts, favoritePage, allPage] = await Promise.all([
+    api.admin.listAccounts(),
+    api.listMailboxesPage(1, 100, 'favorites').catch(() => ({ data: [] })),
+    api.listMailboxesPage(1, 100, 'all').catch(() => ({ data: [] })),
+  ]);
+  const shareMailboxes = mergeAdminOTPShareMailboxes(favoritePage.data || [], allPage.data || []);
+  state.adminOTPShare.mailboxes = shareMailboxes;
+  if (state.adminOTPShare.mailbox?.id) {
+    const refreshed = shareMailboxes.find(item => item.id === state.adminOTPShare.mailbox.id);
+    if (refreshed) state.adminOTPShare.mailbox = refreshed;
+  }
+
   container.innerHTML = `
-    <div class="card" style="max-width:860px">
-      <div class="card-header">
-        <div class="card-title">👥 账户列表</div>
-        <div style="font-size:0.78rem;color:var(--text-muted)">共 ${(accounts||[]).length} 个账户</div>
+    <div class="account-admin-grid">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">👥 账户列表</div>
+          <div style="font-size:0.78rem;color:var(--text-muted)">共 ${(accounts||[]).length} 个账户</div>
+        </div>
+        <div class="table-wrap">
+          <table class="admin-table stack-table">
+            <thead>
+              <tr><th>用户名</th><th>角色</th><th>创建时间</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${(accounts||[]).map(a => `
+                <tr>
+                  ${buildDataLabel('用户名', `
+                    <div style="font-weight:600">${escHtml(a.username || '—')}</div>
+                    <div class="code-box" style="margin-top:0.3rem;font-size:0.72rem">
+                      <span>${escHtml(a.api_key || '—')}</span>
+                      <button class="copy-btn" onclick="copyText('${escHtml(a.api_key||'')}')">⎘</button>
+                    </div>
+                  `)}
+                  ${buildDataLabel('角色', a.is_admin
+                    ? '<span class="badge badge-gold">管理员</span>'
+                    : '<span class="badge badge-gray">普通用户</span>')}
+                  ${buildDataLabel('创建时间', formatDate(a.created_at), 'style="font-size:0.8rem"')}
+                  ${buildDataLabel('操作', !a.is_admin
+                    ? `<div class="table-actions"><button class="btn btn-danger btn-sm" onclick="confirmDeleteAccount('${a.id}','${escHtml(a.username||'')}')">删除</button></div>`
+                    : '<span style="color:var(--text-muted)">—</span>')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div class="table-wrap">
-        <table class="admin-table stack-table">
-          <thead>
-            <tr><th>用户名</th><th>角色</th><th>创建时间</th><th>操作</th></tr>
-          </thead>
-          <tbody>
-            ${(accounts||[]).map(a => `
-              <tr>
-                ${buildDataLabel('用户名', `
-                  <div style="font-weight:600">${escHtml(a.username || '—')}</div>
-                  <div class="code-box" style="margin-top:0.3rem;font-size:0.72rem">
-                    <span>${escHtml(a.api_key || '—')}</span>
-                    <button class="copy-btn" onclick="copyText('${escHtml(a.api_key||'')}')">⎘</button>
-                  </div>
-                `)}
-                ${buildDataLabel('角色', a.is_admin
-                  ? '<span class="badge badge-gold">管理员</span>'
-                  : '<span class="badge badge-gray">普通用户</span>')}
-                ${buildDataLabel('创建时间', formatDate(a.created_at), 'style="font-size:0.8rem"')}
-                ${buildDataLabel('操作', !a.is_admin
-                  ? `<div class="table-actions"><button class="btn btn-danger btn-sm" onclick="confirmDeleteAccount('${a.id}','${escHtml(a.username||'')}')">删除</button></div>`
-                  : '<span style="color:var(--text-muted)">—</span>')}
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">🔐 邮箱级 OTP 分享</div>
+            <div style="font-size:0.78rem;color:var(--text-muted)">输入邮箱地址，生成或自定义分享 token，并输出长链接与取码命令</div>
+          </div>
+          <div style="font-size:0.78rem;color:var(--text-muted)">收藏建议 ${(favoritePage.data || []).length} 个</div>
+        </div>
+        <div class="card-body">
+          <div class="form-group">
+            <label class="form-label">邮箱地址</label>
+            <input class="form-input" id="otp-share-address" list="otp-share-addresses" placeholder="name@example.com" value="${escHtml(state.adminOTPShare.address || '')}" />
+            <datalist id="otp-share-addresses">${buildAdminOTPShareOptions(shareMailboxes)}</datalist>
+            <div class="form-hint">支持手动输入；通常直接填你已收藏保存的邮箱。</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">自定义 Token（可选）</label>
+            <input class="form-input" id="otp-share-token" placeholder="留空则自动生成" value="${escHtml(state.adminOTPShare.token || '')}" />
+            <div class="form-hint">允许 6-64 位字母、数字、下划线或短横线。</div>
+          </div>
+          <div class="otp-share-actions">
+            <button class="btn btn-ghost btn-sm" onclick="loadAdminOTPShare()">读取当前分享</button>
+            <button class="btn btn-primary btn-sm" onclick="saveAdminOTPShare()">保存分享</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteAdminOTPShare()">停用分享</button>
+          </div>
+          <div id="otp-share-result-wrap" style="margin-top:1rem">
+            ${buildAdminOTPShareResult()}
+          </div>
+        </div>
       </div>
     </div>
   `;
 }
+
+async function resolveAdminOTPShareMailbox(requireExistingShare = false) {
+  const address = String($('otp-share-address')?.value || '').trim().toLowerCase();
+  const token = String($('otp-share-token')?.value || '').trim();
+  state.adminOTPShare.address = address;
+  state.adminOTPShare.token = token;
+  if (!address) {
+    toast('请输入邮箱地址', 'warn');
+    return null;
+  }
+  try {
+    const mailbox = await api.lookupMailboxByAddress(address);
+    state.adminOTPShare.mailbox = mailbox;
+    state.adminOTPShare.address = mailbox.full_address || address;
+    return mailbox;
+  } catch (e) {
+    if (!requireExistingShare) state.adminOTPShare.share = null;
+    toast('邮箱查找失败：' + e.message, 'error');
+    return null;
+  }
+}
+
+window.loadAdminOTPShare = async function() {
+  const mailbox = await resolveAdminOTPShareMailbox(true);
+  if (!mailbox) return;
+  try {
+    const share = await api.getMailboxOTPShare(mailbox.id);
+    state.adminOTPShare.share = share;
+    state.adminOTPShare.token = share.token || '';
+    toast('已读取当前分享', 'success');
+  } catch (e) {
+    state.adminOTPShare.share = null;
+    toast(e.message.includes('otp share not found') ? '该邮箱当前没有分享配置' : ('读取失败：' + e.message), e.message.includes('otp share not found') ? 'warn' : 'error');
+  }
+  navigate('admin-accounts');
+};
+
+window.saveAdminOTPShare = async function() {
+  const mailbox = await resolveAdminOTPShareMailbox(false);
+  if (!mailbox) return;
+  try {
+    const customRequested = !!state.adminOTPShare.token;
+    const body = {};
+    if (state.adminOTPShare.token) body.token = state.adminOTPShare.token;
+    const share = await api.upsertMailboxOTPShare(mailbox.id, body);
+    state.adminOTPShare.share = share;
+    state.adminOTPShare.token = share.token || '';
+    toast(customRequested ? 'OTP 分享已保存' : 'OTP 分享已生成', 'success');
+    navigate('admin-accounts');
+  } catch (e) {
+    toast('保存失败：' + e.message, 'error');
+  }
+};
+
+window.deleteAdminOTPShare = async function() {
+  const mailbox = await resolveAdminOTPShareMailbox(true);
+  if (!mailbox) return;
+  try {
+    await api.deleteMailboxOTPShare(mailbox.id);
+    state.adminOTPShare.share = null;
+    state.adminOTPShare.token = '';
+    toast('OTP 分享已停用', 'success');
+    navigate('admin-accounts');
+  } catch (e) {
+    toast('停用失败：' + e.message, 'error');
+  }
+};
 
 window.showCreateAccountModal = function() {
   showModal('创建账户', `

@@ -524,6 +524,47 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 }
 .copy-btn:hover { color: var(--clr-primary); background: rgba(184,92,56,0.08); }
 
+.account-admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.otp-share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.otp-share-result {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+  background: rgba(184,92,56,0.03);
+}
+
+.otp-share-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.85rem;
+}
+
+.otp-share-address {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.otp-share-empty {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
 /* 邮件列表项 */
 .email-item {
   display: flex;
@@ -1100,6 +1141,9 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 
 @media (max-width: 1024px) {
   .hamburger-btn { display: inline-flex; }
+  .account-admin-grid {
+    grid-template-columns: 1fr;
+  }
   .sidebar {
     position: fixed !important;
     left: calc(-1 * var(--sidebar-w) - 1.5rem) !important;
@@ -1127,6 +1171,9 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 }
 
 @media (max-width: 768px) {
+  .otp-share-actions .btn {
+    flex: 1 1 100%;
+  }
   .topbar {
     padding-top: max(0.65rem, env(safe-area-inset-top));
     padding-right: max(0.85rem, env(safe-area-inset-right));

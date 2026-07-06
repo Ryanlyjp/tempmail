@@ -78,6 +78,7 @@ func main() {
 	hostnameH := handler.NewHostnameHandler(db)
 	mailboxH := handler.NewMailboxHandler(db)
 	emailH := handler.NewEmailHandler(db)
+	otpShareH := handler.NewOTPShareHandler(db)
 	settingH := handler.NewSettingHandler(db)
 	registerH := handler.NewRegisterHandler(db)
 	statsH := handler.NewStatsHandler(db)
@@ -88,6 +89,8 @@ func main() {
 		public.GET("/settings", settingH.GetPublic)
 		public.POST("/register", registerH.Register)
 		public.GET("/stats", statsH.Get)
+		public.GET("/otp-share/latest", otpShareH.PublicLatest)
+		public.GET("/otp-share/:token/latest", otpShareH.PublicLatest)
 	}
 
 	// API 路由组（需要认证 + 速率限制）
@@ -109,9 +112,13 @@ func main() {
 		// 邮箱管理
 		api.POST("/mailboxes", mailboxH.Create)
 		api.GET("/mailboxes", mailboxH.List)
+		api.GET("/mailboxes/lookup", mailboxH.Lookup)
 		api.DELETE("/mailboxes/:id", mailboxH.Delete)
 		api.PUT("/mailboxes/:id/favorite", mailboxH.Favorite)
 		api.PUT("/mailboxes/:id/forward", mailboxH.Forward)
+		api.GET("/mailboxes/:id/otp-share", otpShareH.Get)
+		api.POST("/mailboxes/:id/otp-share", otpShareH.Upsert)
+		api.DELETE("/mailboxes/:id/otp-share", otpShareH.Delete)
 
 		// 邮件管理
 		api.GET("/mailboxes/:id/emails", emailH.List)

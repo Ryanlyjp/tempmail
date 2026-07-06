@@ -67,6 +67,14 @@ type Mailbox struct {
 	ExpiresAt        time.Time `json:"expires_at"`
 }
 
+type MailboxOTPShare struct {
+	MailboxID   uuid.UUID `json:"mailbox_id"`
+	FullAddress string    `json:"full_address"`
+	Token       string    `json:"token"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type Email struct {
 	ID          uuid.UUID    `json:"id"`
 	MailboxID   uuid.UUID    `json:"mailbox_id"`

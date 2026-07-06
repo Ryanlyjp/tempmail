@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -20,6 +21,8 @@ import (
 type Store struct {
 	pool *pgxpool.Pool
 }
+
+var ErrMailboxOTPShareTokenConflict = errors.New("mailbox otp share token already exists")
 
 type DomainFilter struct {
 	Status   string
@@ -127,6 +130,14 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			ADD COLUMN IF NOT EXISTS tg_forward_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_mailboxes_favorite
 			ON mailboxes (is_favorite) WHERE is_favorite = TRUE`,
+		`CREATE TABLE IF NOT EXISTS mailbox_otp_shares (
+			mailbox_id UUID PRIMARY KEY REFERENCES mailboxes(id) ON DELETE CASCADE,
+			token VARCHAR(96) NOT NULL UNIQUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mailbox_otp_shares_token
+			ON mailbox_otp_shares (token)`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '')
@@ -801,6 +812,115 @@ func (s *Store) GetMailboxByFullAddress(ctx context.Context, fullAddress string)
 	return &m, nil
 }
 
+func (s *Store) GetMailboxByFullAddressForAccount(ctx context.Context, fullAddress string, accountID uuid.UUID) (*model.Mailbox, error) {
+	var m model.Mailbox
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, account_id, address, domain_id, full_address, is_favorite, tg_forward_enabled, created_at, expires_at
+		 FROM mailboxes WHERE full_address = $1 AND account_id = $2`,
+		strings.ToLower(strings.TrimSpace(fullAddress)), accountID,
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.IsFavorite, &m.TGForwardEnabled, &m.CreatedAt, &m.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (s *Store) GetMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID) (*model.MailboxOTPShare, error) {
+	var share model.MailboxOTPShare
+	err := s.pool.QueryRow(ctx,
+		`SELECT s.mailbox_id, m.full_address, s.token, s.created_at, s.updated_at
+		 FROM mailbox_otp_shares s
+		 JOIN mailboxes m ON m.id = s.mailbox_id
+		 WHERE s.mailbox_id = $1 AND m.account_id = $2`,
+		mailboxID, accountID,
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.CreatedAt, &share.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &share, nil
+}
+
+func (s *Store) UpsertMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID, token string) (*model.MailboxOTPShare, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		token = generateMailboxOTPShareToken()
+	}
+
+	var existingMailboxID uuid.UUID
+	err := s.pool.QueryRow(ctx,
+		`SELECT mailbox_id FROM mailbox_otp_shares WHERE token = $1`,
+		token,
+	).Scan(&existingMailboxID)
+	if err == nil && existingMailboxID != mailboxID {
+		return nil, ErrMailboxOTPShareTokenConflict
+	}
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+
+	var share model.MailboxOTPShare
+	err = s.pool.QueryRow(ctx,
+		`WITH owned AS (
+			SELECT id, full_address
+			FROM mailboxes
+			WHERE id = $1 AND account_id = $2
+		),
+		upserted AS (
+			INSERT INTO mailbox_otp_shares (mailbox_id, token)
+			SELECT owned.id, $3
+			FROM owned
+			ON CONFLICT (mailbox_id) DO UPDATE
+				SET token = EXCLUDED.token,
+				    updated_at = NOW()
+			RETURNING mailbox_id, token, created_at, updated_at
+		)
+		SELECT upserted.mailbox_id, owned.full_address, upserted.token, upserted.created_at, upserted.updated_at
+		FROM upserted
+		JOIN owned ON owned.id = upserted.mailbox_id`,
+		mailboxID, accountID, token,
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.CreatedAt, &share.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "mailbox_otp_shares_token_key") {
+			return nil, ErrMailboxOTPShareTokenConflict
+		}
+		return nil, err
+	}
+	return &share, nil
+}
+
+func (s *Store) DeleteMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM mailbox_otp_shares s
+		 USING mailboxes m
+		 WHERE s.mailbox_id = m.id
+		   AND s.mailbox_id = $1
+		   AND m.account_id = $2`,
+		mailboxID, accountID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) GetMailboxOTPShareByToken(ctx context.Context, token string) (*model.MailboxOTPShare, error) {
+	var share model.MailboxOTPShare
+	err := s.pool.QueryRow(ctx,
+		`SELECT s.mailbox_id, m.full_address, s.token, s.created_at, s.updated_at
+		 FROM mailbox_otp_shares s
+		 JOIN mailboxes m ON m.id = s.mailbox_id
+		 WHERE s.token = $1`,
+		strings.TrimSpace(token),
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.CreatedAt, &share.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &share, nil
+}
+
 // DeleteExpiredMailboxes 刪除已过期的邮箱（及其所有邮件），收藏的邮箱永不删除。
 func (s *Store) DeleteExpiredMailboxes(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
@@ -933,6 +1053,12 @@ func generateAPIKey() string {
 	b := make([]byte, 24)
 	rand.Read(b)
 	return "tm_" + hex.EncodeToString(b)
+}
+
+func generateMailboxOTPShareToken() string {
+	b := make([]byte, 24)
+	rand.Read(b)
+	return "tms_" + hex.EncodeToString(b)
 }
 
 func GenerateRandomAddress() string {

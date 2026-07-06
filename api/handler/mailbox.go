@@ -219,6 +219,24 @@ func (h *MailboxHandler) List(c *gin.Context) {
 	})
 }
 
+// GET /api/mailboxes/lookup?address=foo@example.com - 按邮箱地址查找当前账号名下邮箱
+func (h *MailboxHandler) Lookup(c *gin.Context) {
+	account := middleware.GetAccount(c)
+	address := strings.TrimSpace(strings.ToLower(c.Query("address")))
+	if address == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "address is required"})
+		return
+	}
+
+	mailbox, err := h.store.GetMailboxByFullAddressForAccount(c.Request.Context(), address, account.ID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mailbox": mailbox})
+}
+
 // PUT /api/mailboxes/:id/favorite - 设置/取消收藏
 // 收藏后邮箱不会被定时清理；取消收藏会把过期时间重置为 now + mailbox_ttl_minutes。
 func (h *MailboxHandler) Favorite(c *gin.Context) {
