@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ func (h *SettingHandler) GetPublic(c *gin.Context) {
 	smtpHostname, _ := h.store.GetDefaultHostname(c.Request.Context())
 	hostnames, _ := h.store.ListHostnames(c.Request.Context(), true)
 	announce, _ := h.store.GetSetting(c.Request.Context(), "announcement")
+	mailboxPageSize, _ := h.store.GetSetting(c.Request.Context(), "mailbox_page_size")
 	c.JSON(http.StatusOK, gin.H{
 		"registration_open": regOpen == "true",
 		"site_title":        siteTitle,
@@ -40,6 +42,7 @@ func (h *SettingHandler) GetPublic(c *gin.Context) {
 		"smtp_hostname":     smtpHostname,
 		"hostnames":         hostnames,
 		"announcement":      announce,
+		"mailbox_page_size": mailboxPageSize,
 	})
 }
 
@@ -75,6 +78,7 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"announcement":            true,
 		"default_domain":          true,
 		"mailbox_ttl_minutes":     true,
+		"mailbox_page_size":       true,
 		"api_mailbox_ttl_minutes": true,
 		"catchall_enabled":        true,
 		"catchall_account_id":     true,
@@ -93,6 +97,14 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		if !allowed[k] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting key: " + k})
 			return
+		}
+		if k == "mailbox_page_size" {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 1 || n > 24 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "mailbox_page_size must be an integer between 1 and 24"})
+				return
+			}
+			v = strconv.Itoa(n)
 		}
 		if k == "smtp_hostname" {
 			v = strings.ToLower(strings.TrimSpace(v))

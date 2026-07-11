@@ -790,6 +790,18 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+.pane-pager-jump {
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.pane-pager-jump:hover {
+  background: var(--border-light);
+  color: var(--text);
+}
 .pager-btn {
   min-width: 2.3rem;
   padding: 0.42rem 0.55rem;

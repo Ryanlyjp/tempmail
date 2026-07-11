@@ -24,6 +24,7 @@ const state = {
   adminDomainStatus: 'all',
   adminDomainHostname: 'all',
   adminDomainSelection: {},
+  mailboxPageSize: 6,
   adminOTPShare: {
     mailboxes: [],
     mailbox: null,
@@ -43,6 +44,9 @@ const el = (tag, cls, html) => {
 };
 const DASH_MOBILE_BREAKPOINT = 768;
 const DASH_MOBILE_VIEWS = new Set(['mailboxes', 'emails', 'detail']);
+const DEFAULT_MAILBOX_PAGE_SIZE = 6;
+const MIN_MAILBOX_PAGE_SIZE = 1;
+const MAX_MAILBOX_PAGE_SIZE = 24;
 
 function isMobileLayout() {
   return window.matchMedia(`(max-width: ${DASH_MOBILE_BREAKPOINT}px)`).matches;
@@ -116,6 +120,21 @@ function formatBytes(bytes) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1).replace(/\.0$/, '')} KB`;
   return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
+}
+
+function clampMailboxPageSize(value) {
+  const num = Math.floor(Number(value) || DEFAULT_MAILBOX_PAGE_SIZE);
+  return Math.max(MIN_MAILBOX_PAGE_SIZE, Math.min(MAX_MAILBOX_PAGE_SIZE, num));
+}
+
+function getMailboxPageSize() {
+  return clampMailboxPageSize(state.mailboxPageSize);
+}
+
+function applyPublicSettings(settings = {}) {
+  if (settings && settings.mailbox_page_size !== undefined && settings.mailbox_page_size !== null && settings.mailbox_page_size !== '') {
+    state.mailboxPageSize = clampMailboxPageSize(settings.mailbox_page_size);
+  }
 }
 
 function timeAgo(s) {
@@ -673,7 +692,6 @@ async function renderPage(page) {
 
 // ─── Dashboard（三栏：邮箱列表 | 邮件列表 | 邮件正文） ──────────────
 const PAGE_SIZE = 20;
-const MAILBOX_PAGE_SIZE = 6;
 const MAILBOX_FOLDER_TEMP = 'temp';
 const MAILBOX_FOLDER_FAVORITES = 'favorites';
 const dashState = {
@@ -752,13 +770,14 @@ function getMailboxFolderMeta(folder = dashState.mailboxFolder) {
 
 async function loadMailboxPage(targetPage = dashState.mailboxPage) {
   const folder = normalizeMailboxFolder(dashState.mailboxFolder);
+  const pageSize = getMailboxPageSize();
   let page = Math.max(1, Number(targetPage) || 1);
-  let resp = await api.listMailboxesPage(page, MAILBOX_PAGE_SIZE, folder);
+  let resp = await api.listMailboxesPage(page, pageSize, folder);
   const total = resp?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / MAILBOX_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   if (page > totalPages) {
     page = totalPages;
-    resp = await api.listMailboxesPage(page, MAILBOX_PAGE_SIZE, folder);
+    resp = await api.listMailboxesPage(page, pageSize, folder);
   }
   dashState.mailboxFolder = folder;
   dashState.mailboxPage = page;
@@ -794,11 +813,12 @@ function applyMailboxPage(resp) {
 
 async function renderDashboard(container) {
   const isAdmin = state.account?.is_admin;
-  const [_, domains, statsData, publicSettings] = await Promise.all([
+  const publicSettings = await api.publicSettings().catch(() => ({}));
+  applyPublicSettings(publicSettings);
+  const [_, domains, statsData] = await Promise.all([
     loadMailboxPage(dashState.mailboxPage),
     api.domains(),
     api.stats().catch(() => null),
-    api.publicSettings().catch(() => ({})),
   ]);
 
   // 顶栏按钮
@@ -860,7 +880,7 @@ function paneRenderMailboxes() {
   if (!pane) return;
   const folderMeta = getMailboxFolderMeta();
   const total = dashState.mailboxTotal;
-  const totalPages = Math.max(1, Math.ceil(total / MAILBOX_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / getMailboxPageSize()));
   if (dashState.mailboxPage > totalPages) dashState.mailboxPage = totalPages;
   const rows = dashState.mailboxes;
 
@@ -1148,7 +1168,7 @@ window.forwardEmailToTelegram = async function(mid, eid) {
 
 window.dashSetPage = async function(kind, targetPage) {
   if (kind === 'mailbox') {
-    const totalPages = Math.max(1, Math.ceil((dashState.mailboxTotal || 0) / MAILBOX_PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil((dashState.mailboxTotal || 0) / getMailboxPageSize()));
     dashState.mailboxPage = Math.min(totalPages, Math.max(1, Number(targetPage) || 1));
     await refreshDashboardMailboxes(dashState.mailboxPage);
     return;
@@ -1169,6 +1189,21 @@ window.dashChangePage = async function(kind, delta) {
   }
 };
 
+window.dashPromptPage = async function(kind) {
+  const current = kind === 'mailbox' ? dashState.mailboxPage : dashState.emailPage;
+  const totalPages = kind === 'mailbox'
+    ? Math.max(1, Math.ceil((dashState.mailboxTotal || 0) / getMailboxPageSize()))
+    : Math.max(1, Math.ceil((dashState.emailTotal || 0) / PAGE_SIZE));
+  const raw = window.prompt(`输入要跳转的页码（1-${totalPages}）`, String(current));
+  if (raw === null) return;
+  const page = Math.floor(Number(raw));
+  if (!Number.isFinite(page) || page < 1 || page > totalPages) {
+    toast(`请输入 1 到 ${totalPages} 之间的页码`, 'warn');
+    return;
+  }
+  await window.dashSetPage(kind, page);
+};
+
 function buildPager(kind, page, totalPages) {
   const isFirst = page <= 1;
   const isLast = page >= totalPages;
@@ -1176,7 +1211,7 @@ function buildPager(kind, page, totalPages) {
     <div class="pane-pager">
       <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',1)" ${isFirst ? 'disabled' : ''} aria-label="首页">《</button>
       <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',${page - 1})" ${isFirst ? 'disabled' : ''} aria-label="上一页">&lt;</button>
-      <span class="pane-pager-status">${page} / ${totalPages}</span>
+      <button class="pane-pager-status pane-pager-jump" type="button" onclick="dashPromptPage('${kind}')" title="点击输入页码直达">${page} / ${totalPages}</button>
       <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',${page + 1})" ${isLast ? 'disabled' : ''} aria-label="下一页">&gt;</button>
       <button class="btn btn-ghost btn-sm pager-btn" onclick="dashSetPage('${kind}',${totalPages})" ${isLast ? 'disabled' : ''} aria-label="末页">》</button>
     </div>
@@ -2902,6 +2937,7 @@ async function renderAdminSettings(container) {
   const siteTitle  = settings.site_title            || 'TempMail';
   const defDomain  = settings.default_domain        || '';
   const ttlMins    = settings.mailbox_ttl_minutes   || '30';
+  const mailboxPageSize = settings.mailbox_page_size || String(DEFAULT_MAILBOX_PAGE_SIZE);
   const apiTtlMins = settings.api_mailbox_ttl_minutes || '';
   const catchallEnabled = settings.catchall_enabled === 'true' || settings.catchall_enabled === true;
   const catchallAccountId = settings.catchall_account_id || '';
@@ -3018,6 +3054,10 @@ async function renderAdminSettings(container) {
         ${inputRow('input-mailbox-ttl-minutes', '邮箱有效期（分钟）', ttlMins, '前端 Web UI 创建邮箱的默认存活时间，0 = 永不过期', '30')}
         <div class="divider"></div>
 
+        <!-- Dashboard 邮箱分页大小 -->
+        ${inputRow('input-mailbox-page-size', '收藏夹/邮箱列表每页显示数量', mailboxPageSize, '默认 6。只改变每页显示数量，不改变面板总高度；调少后底部会留空。建议范围 1-24。', '6', 'mailbox_page_size')}
+        <div class="divider"></div>
+
         <!-- 邮箱 TTL（API 创建） -->
         ${inputRow('input-api-mailbox-ttl-minutes', 'API 创建邮箱有效期（分钟）', apiTtlMins, '通过 API 创建邮箱时的存活时间。留空 = 复用上方"邮箱有效期"，0 = 永不过期', '留空则与上方一致')}
         <div class="divider"></div>
@@ -3118,7 +3158,16 @@ async function renderAdminSettings(container) {
 // 通用保存
 window.saveSetting = async function(inputId, settingKey) {
   const el2 = document.getElementById(inputId);
-  const val = el2 ? (el2.tagName === 'TEXTAREA' ? el2.value : el2.value.trim()) : '';
+  let val = el2 ? (el2.tagName === 'TEXTAREA' ? el2.value : el2.value.trim()) : '';
+  if (settingKey === 'mailbox_page_size') {
+    const parsed = Math.floor(Number(val));
+    if (!Number.isFinite(parsed) || parsed < MIN_MAILBOX_PAGE_SIZE || parsed > MAX_MAILBOX_PAGE_SIZE) {
+      toast(`请输入 ${MIN_MAILBOX_PAGE_SIZE} 到 ${MAX_MAILBOX_PAGE_SIZE} 之间的整数`, 'warn');
+      return;
+    }
+    val = String(parsed);
+    state.mailboxPageSize = parsed;
+  }
   try {
     await api.admin.saveSettings({ [settingKey]: val });
     toast('已保存', 'success');

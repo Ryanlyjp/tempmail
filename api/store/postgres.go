@@ -144,6 +144,8 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30')
 			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('mailbox_page_size', '6')
+			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('site_title', 'TempMail')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('default_domain', '')
