@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -79,6 +80,9 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"default_domain":          true,
 		"mailbox_ttl_minutes":     true,
 		"mailbox_page_size":       true,
+		"otp_segmented_enabled":   true,
+		"otp_segmented_lengths":   true,
+		"otp_segmented_senders":   true,
 		"api_mailbox_ttl_minutes": true,
 		"catchall_enabled":        true,
 		"catchall_account_id":     true,
@@ -93,6 +97,7 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"tg_forward_mode":         true,
 	}
 
+	normalizedReq := make(map[string]string, len(req))
 	for k, v := range req {
 		if !allowed[k] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting key: " + k})
@@ -106,8 +111,66 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 			}
 			v = strconv.Itoa(n)
 		}
+		if k == "otp_segmented_enabled" {
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v != "true" && v != "false" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "otp_segmented_enabled must be true or false"})
+				return
+			}
+		}
+		if k == "otp_segmented_lengths" {
+			seen := map[string]bool{}
+			var normalized []string
+			for _, item := range strings.FieldsFunc(v, func(r rune) bool {
+				return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
+			}) {
+				item = strings.TrimSpace(item)
+				if item != "3" && item != "4" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "otp_segmented_lengths only supports 3 and 4"})
+					return
+				}
+				if !seen[item] {
+					seen[item] = true
+					normalized = append(normalized, item)
+				}
+			}
+			if len(normalized) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "otp_segmented_lengths must select 3 or 4"})
+				return
+			}
+			v = strings.Join(normalized, ",")
+		}
+		if k == "otp_segmented_senders" {
+			seen := map[string]bool{}
+			var normalized []string
+			for _, item := range strings.FieldsFunc(v, func(r rune) bool {
+				return r == ',' || r == ';' || r == '\n' || r == '\r'
+			}) {
+				item = strings.TrimSpace(item)
+				if item == "" {
+					continue
+				}
+				parsed, err := mail.ParseAddress(item)
+				if err != nil || strings.TrimSpace(parsed.Address) == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid otp segmented sender: " + item})
+					return
+				}
+				address := strings.ToLower(strings.TrimSpace(parsed.Address))
+				if !seen[address] {
+					seen[address] = true
+					normalized = append(normalized, address)
+				}
+			}
+			v = strings.Join(normalized, "\n")
+		}
 		if k == "smtp_hostname" {
 			v = strings.ToLower(strings.TrimSpace(v))
+		}
+		normalizedReq[k] = v
+	}
+
+	for k, v := range normalizedReq {
+		if k == "smtp_hostname" {
 			if v != "" {
 				if _, err := h.store.UpsertHostname(c.Request.Context(), v); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

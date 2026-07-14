@@ -105,6 +105,48 @@ func (h *EmailHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"email": email})
 }
 
+// GET /api/mailboxes/:id/emails/:email_id/otp - 从指定邮件提取 OTP
+func (h *EmailHandler) ExtractOTP(c *gin.Context) {
+	account := middleware.GetAccount(c)
+	mailboxID, err := parseUUID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mailbox id"})
+		return
+	}
+	mailbox, err := h.store.GetMailbox(c.Request.Context(), mailboxID, account.ID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
+		return
+	}
+	emailID, err := parseUUID(c.Param("email_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email id"})
+		return
+	}
+	email, err := h.store.GetEmail(c.Request.Context(), emailID, mailboxID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "email not found"})
+		return
+	}
+
+	code := extractLatestOTPCode(email, loadOTPExtractionConfig(c.Request.Context(), h.store))
+	if code == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "otp not found in email"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"otp": model.LatestOTPResponse{
+			MailboxID:   mailbox.ID,
+			FullAddress: mailbox.FullAddress,
+			EmailID:     email.ID,
+			Code:        code,
+			Subject:     email.Subject,
+			Sender:      email.Sender,
+			ReceivedAt:  email.ReceivedAt,
+		},
+	})
+}
+
 // GET /api/mailboxes/:id/emails/:email_id/attachments/:attachment_id - 下载附件
 func (h *EmailHandler) DownloadAttachment(c *gin.Context) {
 	account := middleware.GetAccount(c)
@@ -253,7 +295,7 @@ func (h *EmailHandler) LatestOTP(c *gin.Context) {
 		return
 	}
 
-	code := extractLatestOTPCode(email)
+	code := extractLatestOTPCode(email, loadOTPExtractionConfig(c.Request.Context(), h.store))
 	if code == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "otp not found in latest email"})
 		return
@@ -272,13 +314,41 @@ func (h *EmailHandler) LatestOTP(c *gin.Context) {
 	})
 }
 
-func extractLatestOTPCode(email *model.Email) string {
-	code := otp.ExtractFromHTML(email.BodyHTML)
+func extractLatestOTPCode(email *model.Email, config otp.SegmentedConfig) string {
+	code := otp.ExtractFromHTMLWithConfig(email.BodyHTML, email.Sender, config)
 	if code == "" {
 		text := strings.Join([]string{email.BodyText, otp.StripHTML(email.BodyHTML), email.Subject}, "\n")
-		code = otp.Extract(text)
+		code = otp.ExtractWithConfig(text, email.Sender, config)
 	}
 	return code
+}
+
+func loadOTPExtractionConfig(ctx context.Context, s *store.Store) otp.SegmentedConfig {
+	enabled, _ := s.GetSetting(ctx, "otp_segmented_enabled")
+	lengths, _ := s.GetSetting(ctx, "otp_segmented_lengths")
+	senders, _ := s.GetSetting(ctx, "otp_segmented_senders")
+
+	config := otp.SegmentedConfig{
+		Enabled: strings.EqualFold(strings.TrimSpace(enabled), "true"),
+	}
+	for _, length := range strings.FieldsFunc(lengths, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
+	}) {
+		switch strings.TrimSpace(length) {
+		case "3":
+			config.AllowThree = true
+		case "4":
+			config.AllowFour = true
+		}
+	}
+	for _, sender := range strings.FieldsFunc(senders, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	}) {
+		if sender = strings.TrimSpace(sender); sender != "" {
+			config.AllowedSenders = append(config.AllowedSenders, sender)
+		}
+	}
+	return config
 }
 
 // DELETE /api/mailboxes/:mailbox_id/emails/:id - 删除邮件

@@ -11,6 +11,7 @@ import (
 	"tempmail/store"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type MailboxHandler struct {
@@ -203,19 +204,29 @@ func (h *MailboxHandler) List(c *gin.Context) {
 	if size < 1 || size > 100 {
 		size = 20
 	}
+	var favoriteGroupID *uuid.UUID
+	if rawGroupID := strings.TrimSpace(c.Query("group_id")); rawGroupID != "" {
+		groupID, err := uuid.Parse(rawGroupID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid favorite group id"})
+			return
+		}
+		favoriteGroupID = &groupID
+	}
 
-	mailboxes, total, err := h.store.ListMailboxes(c.Request.Context(), account.ID, page, size, folder)
+	mailboxes, total, err := h.store.ListMailboxes(c.Request.Context(), account.ID, page, size, folder, favoriteGroupID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"folder": folder,
-		"data":   mailboxes,
-		"total":  total,
-		"page":   page,
-		"size":   size,
+		"folder":   folder,
+		"data":     mailboxes,
+		"total":    total,
+		"page":     page,
+		"size":     size,
+		"group_id": favoriteGroupID,
 	})
 }
 

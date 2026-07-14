@@ -27,6 +27,9 @@ const state = {
   mailboxPageSize: 6,
   adminOTPShare: {
     mailboxes: [],
+    shares: [],
+    groups: [],
+    groupID: '',
     mailbox: null,
     share: null,
     address: '',
@@ -249,6 +252,7 @@ function buildDashboardMailboxHeaderActions(mailbox) {
     ${buildMailboxForwardButton(mailbox)}
     <button class="btn btn-ghost btn-sm" onclick="toggleFavorite('${mailbox.id}',${!mbIsFav})" title="${mbFavTitle}">${mbFavIcon}</button>
     <button class="btn btn-ghost btn-sm" onclick="copyText('${escHtml(mailbox.full_address)}')" title="复制地址">⎘</button>
+    ${buildMailboxFavoriteGroupButton(mailbox)}
     <button class="btn btn-ghost btn-sm" onclick="paneRenderEmails()" title="刷新">↻</button>
     <button class="btn btn-danger btn-sm" onclick="confirmDeleteMailbox('${mailbox.id}','${escHtml(mailbox.full_address)}')" title="删除邮箱">✕</button>
   `;
@@ -299,9 +303,10 @@ const api = {
   getDomainStatus: id => apiFetch(API_BASE + '/domains/' + id + '/status'),
   // 邮箱 → 解包 {data:[...]}
   createMailbox:   (body) => apiFetch(API_BASE + '/mailboxes', { method: 'POST', body: JSON.stringify(body || {}) }).then(d => d.mailbox || d),
-  listMailboxesPage: (page = 1, size = 20, folder = 'all') => {
+  listMailboxesPage: (page = 1, size = 20, folder = 'all', groupID = '') => {
     const folderParam = folder ? '&folder=' + encodeURIComponent(folder) : '';
-    return apiFetch(API_BASE + '/mailboxes?page=' + page + '&size=' + size + folderParam).then(d => ({
+    const groupParam = groupID ? '&group_id=' + encodeURIComponent(groupID) : '';
+    return apiFetch(API_BASE + '/mailboxes?page=' + page + '&size=' + size + folderParam + groupParam).then(d => ({
       data: Array.isArray(d) ? d : (d.data || []),
       total: d.total ?? (Array.isArray(d) ? d.length : 0),
       page: d.page ?? page,
@@ -311,12 +316,41 @@ const api = {
   listMailboxes:   (folder = 'all') => api.listMailboxesPage(1, 20, folder).then(d => d.data),
   lookupMailboxByAddress: address => apiFetch(API_BASE + '/mailboxes/lookup?address=' + encodeURIComponent(address)).then(d => d.mailbox || d),
   deleteMailbox: id  => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
+  deleteMailboxes: ids => apiFetch(API_BASE + '/mailboxes/batch', {
+    method: 'DELETE',
+    body: JSON.stringify({ ids }),
+  }),
+  listFavoriteGroups: () => apiFetch(API_BASE + '/favorite-groups'),
+  createFavoriteGroup: name => apiFetch(API_BASE + '/favorite-groups', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  }).then(d => d.group || d),
+  renameFavoriteGroup: (id, name) => apiFetch(API_BASE + '/favorite-groups/' + id, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  }).then(d => d.group || d),
+  selectFavoriteGroup: id => apiFetch(API_BASE + '/favorite-groups/' + id + '/select', { method: 'PUT' }),
+  reorderFavoriteGroup: (id, direction) => apiFetch(API_BASE + '/favorite-groups/' + id + '/reorder', {
+    method: 'PUT',
+    body: JSON.stringify({ direction }),
+  }),
+  deleteFavoriteGroup: id => apiFetch(API_BASE + '/favorite-groups/' + id, { method: 'DELETE' }),
+  moveMailboxToFavoriteGroup: (id, groupID) => apiFetch(API_BASE + '/mailboxes/' + id + '/favorite-group', {
+    method: 'PUT',
+    body: JSON.stringify({ group_id: groupID }),
+  }).then(d => d.mailbox || d),
+  moveMailboxesToFavoriteGroup: (ids, groupID) => apiFetch(API_BASE + '/mailboxes/batch/favorite-group', {
+    method: 'PUT',
+    body: JSON.stringify({ ids, group_id: groupID }),
+  }),
   setMailboxForward: (id, enabled) => apiFetch(API_BASE + '/mailboxes/' + id + '/forward', {
     method: 'PUT',
     body: JSON.stringify({ enabled: !!enabled }),
   }).then(d => d.mailbox || d),
   latestOTP:      id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp/latest').then(d => d.otp || d),
+  emailOTP:       (mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid + '/otp').then(d => d.otp || d),
   getMailboxOTPShare: id => apiFetch(API_BASE + '/mailboxes/' + id + '/otp-share').then(d => d.share || d),
+  listMailboxOTPShares: () => apiFetch(API_BASE + '/otp-shares').then(d => Array.isArray(d) ? d : (d.shares || [])),
   upsertMailboxOTPShare: (id, body) => apiFetch(API_BASE + '/mailboxes/' + id + '/otp-share', {
     method: 'POST',
     body: JSON.stringify(body || {}),
@@ -702,6 +736,9 @@ const dashState = {
   selectedMailbox: null, // {id, full_address, is_favorite, expires_at, ...}
   selectedEmailId: null,
   mailboxFolder: MAILBOX_FOLDER_TEMP,
+  favoriteGroups: [],
+  favoriteGroupID: null,
+  mailboxSelection: {},
   mailboxPage: 1,
   emailPage: 1,
   mobileView: 'mailboxes',
@@ -740,19 +777,44 @@ function normalizeMailboxFolder(folder) {
   return folder === MAILBOX_FOLDER_FAVORITES ? MAILBOX_FOLDER_FAVORITES : MAILBOX_FOLDER_TEMP;
 }
 
+function getCurrentFavoriteGroup() {
+  return dashState.favoriteGroups.find(group => group.id === dashState.favoriteGroupID) || dashState.favoriteGroups[0] || null;
+}
+
+async function loadFavoriteGroups(useServerSelection = true) {
+  const payload = await api.listFavoriteGroups();
+  const groups = Array.isArray(payload) ? payload : (payload.groups || []);
+  dashState.favoriteGroups = groups;
+  const currentStillExists = groups.some(group => group.id === dashState.favoriteGroupID);
+  const selectedID = payload.selected_group_id || groups[0]?.id || null;
+  if (useServerSelection || !currentStillExists) {
+    dashState.favoriteGroupID = selectedID;
+  }
+  return groups;
+}
+
+function clearMailboxSelection() {
+  dashState.mailboxSelection = {};
+}
+
+function selectedMailboxIDs() {
+  return Object.keys(dashState.mailboxSelection).filter(id => dashState.mailboxSelection[id]);
+}
+
 function getMailboxFolderMeta(folder = dashState.mailboxFolder) {
   const current = normalizeMailboxFolder(folder);
   if (current === MAILBOX_FOLDER_FAVORITES) {
+    const group = getCurrentFavoriteGroup();
     return {
       key: MAILBOX_FOLDER_FAVORITES,
       icon: '★',
-      title: '收藏夹',
-      stripLabel: '收藏邮箱',
+      title: group?.name || '收藏夹1',
+      stripLabel: group?.name || '收藏邮箱',
       switchLabel: '📬 临时箱',
       switchFolder: MAILBOX_FOLDER_TEMP,
       emptyIcon: '★',
-      emptyTitle: '收藏夹还是空的',
-      emptyHint: '点邮箱卡片上的 ☆ 之后，会永久保留在这里',
+      emptyTitle: '这个收藏夹还是空的',
+      emptyHint: '可从其他收藏夹移动邮箱，或将临时邮箱收藏到这里',
     };
   }
   return {
@@ -771,13 +833,14 @@ function getMailboxFolderMeta(folder = dashState.mailboxFolder) {
 async function loadMailboxPage(targetPage = dashState.mailboxPage) {
   const folder = normalizeMailboxFolder(dashState.mailboxFolder);
   const pageSize = getMailboxPageSize();
+  const groupID = folder === MAILBOX_FOLDER_FAVORITES ? (dashState.favoriteGroupID || '') : '';
   let page = Math.max(1, Number(targetPage) || 1);
-  let resp = await api.listMailboxesPage(page, pageSize, folder);
+  let resp = await api.listMailboxesPage(page, pageSize, folder, groupID);
   const total = resp?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   if (page > totalPages) {
     page = totalPages;
-    resp = await api.listMailboxesPage(page, pageSize, folder);
+    resp = await api.listMailboxesPage(page, pageSize, folder, groupID);
   }
   dashState.mailboxFolder = folder;
   dashState.mailboxPage = page;
@@ -815,6 +878,7 @@ async function renderDashboard(container) {
   const isAdmin = state.account?.is_admin;
   const publicSettings = await api.publicSettings().catch(() => ({}));
   applyPublicSettings(publicSettings);
+  await loadFavoriteGroups(true);
   const [_, domains, statsData] = await Promise.all([
     loadMailboxPage(dashState.mailboxPage),
     api.domains(),
@@ -883,11 +947,17 @@ function paneRenderMailboxes() {
   const totalPages = Math.max(1, Math.ceil(total / getMailboxPageSize()));
   if (dashState.mailboxPage > totalPages) dashState.mailboxPage = totalPages;
   const rows = dashState.mailboxes;
+  const selectedCount = selectedMailboxIDs().length;
+  const titleHtml = folderMeta.key === MAILBOX_FOLDER_FAVORITES
+    ? `<button class="favorite-group-title" type="button" onclick="openFavoriteGroupsMenu(event)" title="切换或管理收藏夹">
+        <span>${folderMeta.icon} ${escHtml(folderMeta.title)} (${total})</span><span class="favorite-group-caret">▾</span>
+      </button>`
+    : `<span class="pane-title">${folderMeta.icon} ${folderMeta.title} (${total})</span>`;
 
   pane.innerHTML = `
     <div class="pane-header">
       <div class="pane-header-main">
-        <span class="pane-title">${folderMeta.icon} ${folderMeta.title} (${total})</span>
+        ${titleHtml}
       </div>
       <div class="pane-header-actions">
         <button class="btn btn-ghost btn-sm" onclick="dashToggleMailboxFolder('${folderMeta.switchFolder}')" title="切换邮箱分组">${folderMeta.switchLabel}</button>
@@ -901,6 +971,7 @@ function paneRenderMailboxes() {
       }
     </div>
     ${totalPages > 1 ? buildPager('mailbox', dashState.mailboxPage, totalPages) : ''}
+    ${selectedCount > 0 ? buildMailboxBatchToolbar(selectedCount) : ''}
   `;
 }
 
@@ -925,9 +996,17 @@ function buildMailboxCard(mb) {
   const isSelected = dashState.selectedMailbox?.id === mb.id;
   const favIcon = isFav ? '★' : '☆';
   const favTitle = isFav ? '取消收藏' : '收藏（防过期）';
+  const checked = !!dashState.mailboxSelection[mb.id];
+  const checkbox = dashState.mailboxFolder === MAILBOX_FOLDER_FAVORITES
+    ? `<label class="mailbox-select-wrap" title="选择此邮箱" onclick="event.stopPropagation()">
+        <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleMailboxSelection('${mb.id}',this.checked)" />
+        <span class="mailbox-select-box"></span>
+      </label>`
+    : '';
   return `
     <div class="mailbox-card${isSelected ? ' is-selected' : ''}${isFav ? ' is-favorite' : ''}" onclick="dashSelectMailbox('${mb.id}')">
       <div class="mailbox-address-row">
+        ${checkbox}
         <div class="mailbox-address">${escHtml(mb.full_address)}</div>
         ${forwardBadge}
       </div>
@@ -940,11 +1019,295 @@ function buildMailboxCard(mb) {
         ${buildMailboxForwardButton(mb, true)}
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();toggleFavorite('${mb.id}',${!isFav})" title="${favTitle}">${favIcon}</button>
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();copyText('${escHtml(mb.full_address)}')" title="复制地址">⎘</button>
+        ${buildMailboxFavoriteGroupButton(mb, true)}
         <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();confirmDeleteMailbox('${mb.id}','${escHtml(mb.full_address)}')" title="删除">✕</button>
       </div>
     </div>
   `;
 }
+
+function buildMailboxFavoriteGroupButton(mailbox, stopPropagation = false) {
+  const prefix = stopPropagation ? 'event.stopPropagation();' : '';
+  const group = dashState.favoriteGroups.find(item => item.id === mailbox.favorite_group_id);
+  const title = mailbox.is_favorite
+    ? `当前分组：${group?.name || '收藏夹'}`
+    : '移动到收藏夹分组';
+  return `<button class="btn btn-ghost btn-sm" onclick="${prefix}openMailboxGroupMenu(event,'${mailbox.id}')" title="${escHtml(title)}">▤</button>`;
+}
+
+function buildMailboxBatchToolbar(count) {
+  return `
+    <div class="mailbox-batch-toolbar">
+      <span>已选 ${count} 个</span>
+      <div class="mailbox-batch-actions">
+        <button class="btn btn-ghost btn-sm" type="button" onclick="openBatchGroupMenu(event)">▤ 移动到分组</button>
+        <button class="btn btn-danger btn-sm" type="button" onclick="confirmBatchDeleteMailboxes()">✕ 批量删除</button>
+        <button class="btn btn-ghost btn-sm" type="button" onclick="clearMailboxSelection();paneRenderMailboxes()">取消</button>
+      </div>
+    </div>
+  `;
+}
+
+function closeFavoriteGroupPopovers() {
+  document.querySelectorAll('.favorite-group-popover').forEach(node => node.remove());
+}
+
+function placeFavoriteGroupPopover(popover, anchor) {
+  document.body.appendChild(popover);
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(320, window.innerWidth - 24);
+  popover.style.width = width + 'px';
+  let left = Math.min(rect.left, window.innerWidth - width - 12);
+  left = Math.max(12, left);
+  let top = rect.bottom + 7;
+  const height = popover.offsetHeight;
+  if (top + height > window.innerHeight - 12) {
+    top = Math.max(12, rect.top - height - 7);
+  }
+  popover.style.left = left + 'px';
+  popover.style.top = top + 'px';
+  popover.addEventListener('click', event => event.stopPropagation());
+  setTimeout(() => document.addEventListener('click', closeFavoriteGroupPopovers, { once: true }), 0);
+}
+
+window.openFavoriteGroupsMenu = function(event) {
+  event.stopPropagation();
+  closeFavoriteGroupPopovers();
+  const popover = el('div', 'favorite-group-popover favorite-group-manager');
+  const groups = dashState.favoriteGroups;
+  popover.innerHTML = `
+    <div class="favorite-group-popover-title">收藏夹分组</div>
+    <div class="favorite-group-list">
+      ${groups.map((group, index) => `
+        <div class="favorite-group-row${group.id === dashState.favoriteGroupID ? ' is-current' : ''}">
+          <button class="favorite-group-choice" type="button" onclick="selectFavoriteGroup('${group.id}')">
+            <span class="favorite-group-check">${group.id === dashState.favoriteGroupID ? '✓' : ''}</span>
+            <span class="favorite-group-name">${escHtml(group.name)}</span>
+            <span class="favorite-group-count">${Number(group.mailbox_count) || 0}</span>
+          </button>
+          <div class="favorite-group-row-actions">
+            <button type="button" onclick="openRenameFavoriteGroup('${group.id}')" title="重命名">✎</button>
+            <button type="button" onclick="reorderFavoriteGroup('${group.id}','up')" title="上移" ${index === 0 ? 'disabled' : ''}>↑</button>
+            <button type="button" onclick="reorderFavoriteGroup('${group.id}','down')" title="下移" ${index === groups.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="is-danger" type="button" onclick="confirmDeleteFavoriteGroup('${group.id}')" title="删除" ${groups.length <= 1 ? 'disabled' : ''}>✕</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="favorite-group-create" type="button" onclick="openCreateFavoriteGroup()">+ 新建收藏夹</button>
+  `;
+  placeFavoriteGroupPopover(popover, event.currentTarget);
+};
+
+function openFavoriteGroupPicker(event, onSelect, currentGroupID = '') {
+  event.stopPropagation();
+  closeFavoriteGroupPopovers();
+  const popover = el('div', 'favorite-group-popover favorite-group-picker');
+  popover.innerHTML = `
+    <div class="favorite-group-popover-title">移动到分组</div>
+    <div class="favorite-group-list">
+      ${dashState.favoriteGroups.map(group => `
+        <button class="favorite-group-picker-item${group.id === currentGroupID ? ' is-current' : ''}" type="button" data-group-id="${group.id}">
+          <span class="favorite-group-check">${group.id === currentGroupID ? '✓' : ''}</span>
+          <span>${escHtml(group.name)}</span>
+          <span class="favorite-group-count">${Number(group.mailbox_count) || 0}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+  popover.querySelectorAll('[data-group-id]').forEach(button => {
+    button.addEventListener('click', () => onSelect(button.dataset.groupId));
+  });
+  placeFavoriteGroupPopover(popover, event.currentTarget);
+}
+
+window.openMailboxGroupMenu = function(event, mailboxID) {
+  const mailbox = dashState.mailboxes.find(item => item.id === mailboxID)
+    || (state.currentMailbox?.id === mailboxID ? state.currentMailbox : null)
+    || (dashState.selectedMailbox?.id === mailboxID ? dashState.selectedMailbox : null);
+  if (!mailbox) return;
+  openFavoriteGroupPicker(event, groupID => moveMailboxToFavoriteGroup(mailboxID, groupID), mailbox.favorite_group_id || '');
+};
+
+window.openBatchGroupMenu = function(event) {
+  if (selectedMailboxIDs().length === 0) return;
+  openFavoriteGroupPicker(event, groupID => moveSelectedMailboxesToGroup(groupID), dashState.favoriteGroupID || '');
+};
+
+window.toggleMailboxSelection = function(mailboxID, checked) {
+  if (checked) dashState.mailboxSelection[mailboxID] = true;
+  else delete dashState.mailboxSelection[mailboxID];
+  paneRenderMailboxes();
+};
+
+window.selectFavoriteGroup = async function(groupID) {
+  try {
+    await api.selectFavoriteGroup(groupID);
+    dashState.favoriteGroupID = groupID;
+    dashState.mailboxFolder = MAILBOX_FOLDER_FAVORITES;
+    dashState.mailboxPage = 1;
+    clearMailboxSelection();
+    closeFavoriteGroupPopovers();
+    await refreshDashboardMailboxes(1);
+  } catch (error) {
+    toast('切换收藏夹失败：' + error.message, 'error');
+  }
+};
+
+window.openCreateFavoriteGroup = function() {
+  closeFavoriteGroupPopovers();
+  showModal('新建收藏夹', `
+    <div class="form-group">
+      <label class="form-label">收藏夹名称</label>
+      <input class="form-input" id="favorite-group-name" maxlength="32" placeholder="例如：收藏夹2" autocomplete="off" />
+      <div class="form-hint">1-32 个字符，同一账户下不能重名。</div>
+    </div>
+  `, async () => {
+    const name = ($('favorite-group-name')?.value || '').trim();
+    if (!name) {
+      toast('请输入收藏夹名称', 'warn');
+      return false;
+    }
+    try {
+      const group = await api.createFavoriteGroup(name);
+      await api.selectFavoriteGroup(group.id);
+      dashState.favoriteGroupID = group.id;
+      dashState.mailboxFolder = MAILBOX_FOLDER_FAVORITES;
+      dashState.mailboxPage = 1;
+      clearMailboxSelection();
+      await loadFavoriteGroups(false);
+      await refreshDashboardMailboxes(1);
+      toast('收藏夹已创建', 'success');
+      return true;
+    } catch (error) {
+      toast('创建失败：' + error.message, 'error');
+      return false;
+    }
+  });
+  setTimeout(() => $('favorite-group-name')?.focus(), 0);
+};
+
+window.openRenameFavoriteGroup = function(groupID) {
+  const group = dashState.favoriteGroups.find(item => item.id === groupID);
+  if (!group) return;
+  closeFavoriteGroupPopovers();
+  showModal('重命名收藏夹', `
+    <div class="form-group">
+      <label class="form-label">收藏夹名称</label>
+      <input class="form-input" id="favorite-group-name" maxlength="32" value="${escHtml(group.name)}" autocomplete="off" />
+    </div>
+  `, async () => {
+    const name = ($('favorite-group-name')?.value || '').trim();
+    if (!name) {
+      toast('请输入收藏夹名称', 'warn');
+      return false;
+    }
+    try {
+      await api.renameFavoriteGroup(groupID, name);
+      await loadFavoriteGroups(false);
+      paneRenderMailboxes();
+      toast('收藏夹已重命名', 'success');
+      return true;
+    } catch (error) {
+      toast('重命名失败：' + error.message, 'error');
+      return false;
+    }
+  });
+  setTimeout(() => {
+    const input = $('favorite-group-name');
+    input?.focus();
+    input?.select();
+  }, 0);
+};
+
+window.reorderFavoriteGroup = async function(groupID, direction) {
+  closeFavoriteGroupPopovers();
+  try {
+    await api.reorderFavoriteGroup(groupID, direction);
+    await loadFavoriteGroups(false);
+    paneRenderMailboxes();
+    toast('收藏夹顺序已调整', 'success');
+  } catch (error) {
+    toast('排序失败：' + error.message, 'error');
+  }
+};
+
+window.confirmDeleteFavoriteGroup = function(groupID) {
+  const group = dashState.favoriteGroups.find(item => item.id === groupID);
+  if (!group) return;
+  closeFavoriteGroupPopovers();
+  showModal('删除收藏夹', `
+    <p>确定删除 <strong>${escHtml(group.name)}</strong>？</p>
+    <p class="form-hint" style="margin-top:0.55rem">其中的 ${Number(group.mailbox_count) || 0} 个邮箱不会被删除，将自动移动到排序最前的其他收藏夹。</p>
+  `, async () => {
+    try {
+      await api.deleteFavoriteGroup(groupID);
+      clearMailboxSelection();
+      dashState.mailboxPage = 1;
+      await loadFavoriteGroups(true);
+      await refreshDashboardMailboxes(1);
+      toast('收藏夹已删除，邮箱已安全保留', 'success');
+      return true;
+    } catch (error) {
+      toast('删除收藏夹失败：' + error.message, 'error');
+      return false;
+    }
+  });
+};
+
+window.moveMailboxToFavoriteGroup = async function(mailboxID, groupID) {
+  closeFavoriteGroupPopovers();
+  try {
+    const updated = await api.moveMailboxToFavoriteGroup(mailboxID, groupID);
+    syncMailboxState(updated);
+    clearMailboxSelection();
+    await loadFavoriteGroups(false);
+    await refreshDashboardMailboxes(dashState.mailboxPage);
+    toast('邮箱已移动到分组', 'success');
+  } catch (error) {
+    toast('移动失败：' + error.message, 'error');
+  }
+};
+
+window.moveSelectedMailboxesToGroup = async function(groupID) {
+  const ids = selectedMailboxIDs();
+  if (ids.length === 0) return;
+  closeFavoriteGroupPopovers();
+  try {
+    await api.moveMailboxesToFavoriteGroup(ids, groupID);
+    clearMailboxSelection();
+    await loadFavoriteGroups(false);
+    await refreshDashboardMailboxes(dashState.mailboxPage);
+    toast(`已移动 ${ids.length} 个邮箱`, 'success');
+  } catch (error) {
+    toast('批量移动失败：' + error.message, 'error');
+  }
+};
+
+window.confirmBatchDeleteMailboxes = function() {
+  const ids = selectedMailboxIDs();
+  if (ids.length === 0) return;
+  showModal('批量删除邮箱', `
+    <p>确定永久删除选中的 <strong>${ids.length}</strong> 个邮箱？</p>
+    <p class="form-hint" style="margin-top:0.55rem;color:var(--clr-danger)">这些邮箱中的所有邮件也会被永久删除。</p>
+  `, async () => {
+    try {
+      await api.deleteMailboxes(ids);
+      if (dashState.selectedMailbox && ids.includes(dashState.selectedMailbox.id)) {
+        dashState.selectedMailbox = null;
+        dashState.selectedEmailId = null;
+      }
+      clearMailboxSelection();
+      await loadFavoriteGroups(false);
+      await refreshDashboardMailboxes(dashState.mailboxPage);
+      toast(`已删除 ${ids.length} 个邮箱`, 'success');
+      return true;
+    } catch (error) {
+      toast('批量删除失败：' + error.message, 'error');
+      return false;
+    }
+  });
+};
 
 window.dashSelectMailbox = function(id) {
   const mb = dashState.mailboxes.find(m => m.id === id);
@@ -967,6 +1330,7 @@ window.dashToggleMailboxFolder = async function(folder) {
   if (nextFolder === dashState.mailboxFolder) return;
   dashState.mailboxFolder = nextFolder;
   dashState.mailboxPage = 1;
+  clearMailboxSelection();
   await refreshDashboardMailboxes(1);
 };
 
@@ -1170,6 +1534,7 @@ window.dashSetPage = async function(kind, targetPage) {
   if (kind === 'mailbox') {
     const totalPages = Math.max(1, Math.ceil((dashState.mailboxTotal || 0) / getMailboxPageSize()));
     dashState.mailboxPage = Math.min(totalPages, Math.max(1, Number(targetPage) || 1));
+    clearMailboxSelection();
     await refreshDashboardMailboxes(dashState.mailboxPage);
     return;
   }
@@ -1291,6 +1656,7 @@ window.toggleFavorite = async function(id, fav) {
     const updated = res.mailbox || res;
     syncMailboxState(updated);
     if (state.page === 'dashboard') {
+      await loadFavoriteGroups(false);
       await refreshDashboardMailboxes(dashState.mailboxPage);
     }
     if (state.page === 'inbox') renderInboxTopbarActions(updated);
@@ -1378,9 +1744,8 @@ window.extractAndCopyCode = async function(mailboxID, fullAddress) {
 
 window.dashExtractCodeFromEmail = async function(mailboxID, emailID) {
   try {
-    const full = await api.getEmail(mailboxID, emailID);
-    const code = extractCodeFromHtml(full.body_html || '') || extractCode((full.body_text || '') + '\n' + stripHtml(full.body_html || '') + '\n' + (full.subject || ''));
-    
+    const result = await api.emailOTP(mailboxID, emailID);
+    const code = result?.code || '';
     if (!code) { toast('未识别到验证码', 'warn'); return; }
     await navigator.clipboard.writeText(code).catch(() => {});
     toast(`已复制验证码：${code}`, 'success');
@@ -1915,17 +2280,6 @@ async function renderDomainsGuide(container) {
 }
 
 // ─── Admin: 账户管理 ─────────────────────────────────────────
-function mergeAdminOTPShareMailboxes(favorites, all) {
-  const merged = [];
-  const seen = new Set();
-  [...(favorites || []), ...(all || [])].forEach(mailbox => {
-    if (!mailbox || !mailbox.id || seen.has(mailbox.id)) return;
-    seen.add(mailbox.id);
-    merged.push(mailbox);
-  });
-  return merged;
-}
-
 function buildAdminOTPShareOptions(mailboxes) {
   return (mailboxes || []).map(mailbox => {
     const label = mailbox.is_favorite ? `${mailbox.full_address} ★` : mailbox.full_address;
@@ -1937,6 +2291,7 @@ function buildAdminOTPShareResult() {
   const current = state.adminOTPShare || {};
   const mailbox = current.mailbox;
   const share = current.share;
+  const group = (current.groups || []).find(item => item.id === mailbox?.favorite_group_id);
   if (!mailbox) {
     return `
       <div class="otp-share-empty">
@@ -1983,7 +2338,7 @@ function buildAdminOTPShareResult() {
   return `
     <div class="otp-share-result">
       <div class="otp-share-meta">
-        <span class="badge badge-gold">${mailbox.is_favorite ? '★ 收藏邮箱' : '邮箱已匹配'}</span>
+        <span class="badge badge-gold">${mailbox.is_favorite ? `★ ${escHtml(group?.name || '收藏邮箱')}` : '邮箱已匹配'}</span>
         <span class="otp-share-address">${escHtml(mailbox.full_address || '—')}</span>
       </div>
       ${tokenBox}
@@ -1997,19 +2352,63 @@ function buildAdminOTPShareResult() {
   `;
 }
 
+function buildAdminOTPShareList() {
+  const shares = state.adminOTPShare.shares || [];
+  if (shares.length === 0) {
+    return `
+      <div class="otp-share-list-empty">
+        还没有已启用的邮箱级 OTP 分享。
+      </div>
+    `;
+  }
+
+  return `
+    <div class="otp-share-list">
+      ${shares.map(share => `
+        <div class="otp-share-list-item">
+          <div class="otp-share-list-main">
+            <div class="otp-share-list-address">${escHtml(share.full_address || '—')}</div>
+            <div class="otp-share-list-token">
+              <span>${escHtml(share.token || '—')}</span>
+              <button class="copy-btn" type="button" onclick='copyText(${JSON.stringify(share.token || '')})' title="复制 Token">⎘</button>
+            </div>
+            <div class="otp-share-list-time">更新于 ${escHtml(formatDate(share.updated_at))}</div>
+          </div>
+          <div class="otp-share-list-actions">
+            <button class="btn btn-ghost btn-sm" type="button" onclick="editAdminOTPShare('${share.mailbox_id}')">编辑</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick='copyText(${JSON.stringify(share.url || '')})'>复制链接</button>
+            <button class="btn btn-danger btn-sm" type="button" onclick="confirmRevokeAdminOTPShare('${share.mailbox_id}')">收回</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 async function renderAdminAccounts(container) {
   const actions = $('topbar-actions');
   if (actions) {
     actions.innerHTML = `<button class="btn btn-primary btn-sm" onclick="showCreateAccountModal()">+ 创建账户</button>`;
   }
 
-  const [accounts, favoritePage, allPage] = await Promise.all([
+  const groupPayload = await api.listFavoriteGroups().catch(() => ({ groups: [], selected_group_id: '' }));
+  const favoriteGroups = Array.isArray(groupPayload) ? groupPayload : (groupPayload.groups || []);
+  const existingGroup = favoriteGroups.find(group => group.id === state.adminOTPShare.groupID);
+  const selectedGroup = existingGroup
+    || favoriteGroups.find(group => group.id === groupPayload.selected_group_id)
+    || favoriteGroups[0]
+    || null;
+  state.adminOTPShare.groups = favoriteGroups;
+  state.adminOTPShare.groupID = selectedGroup?.id || '';
+
+  const [accounts, favoritePage, otpShares] = await Promise.all([
     api.admin.listAccounts(),
-    api.listMailboxesPage(1, 100, 'favorites').catch(() => ({ data: [] })),
-    api.listMailboxesPage(1, 100, 'all').catch(() => ({ data: [] })),
+    api.listMailboxesPage(1, 100, 'favorites', state.adminOTPShare.groupID).catch(() => ({ data: [], total: 0 })),
+    api.listMailboxOTPShares().catch(() => []),
   ]);
-  const shareMailboxes = mergeAdminOTPShareMailboxes(favoritePage.data || [], allPage.data || []);
+  const shareMailboxes = favoritePage.data || [];
   state.adminOTPShare.mailboxes = shareMailboxes;
+  state.adminOTPShare.shares = otpShares;
   if (state.adminOTPShare.mailbox?.id) {
     const refreshed = shareMailboxes.find(item => item.id === state.adminOTPShare.mailbox.id);
     if (refreshed) state.adminOTPShare.mailbox = refreshed;
@@ -2055,16 +2454,27 @@ async function renderAdminAccounts(container) {
         <div class="card-header">
           <div>
             <div class="card-title">🔐 邮箱级 OTP 分享</div>
-            <div style="font-size:0.78rem;color:var(--text-muted)">输入邮箱地址，生成或自定义分享 token，并输出长链接与取码命令</div>
+            <div style="font-size:0.78rem;color:var(--text-muted)">先按收藏夹分组缩小候选范围，再生成或自定义分享 token</div>
           </div>
-          <div style="font-size:0.78rem;color:var(--text-muted)">收藏建议 ${(favoritePage.data || []).length} 个</div>
+          <div style="font-size:0.78rem;color:var(--text-muted)">当前候选 ${Number(favoritePage.total) || shareMailboxes.length} 个</div>
         </div>
         <div class="card-body">
+          <div class="form-group">
+            <label class="form-label">邮箱分组</label>
+            <select class="form-input" id="otp-share-group" onchange="changeAdminOTPShareGroup(this.value)">
+              ${favoriteGroups.map(group => `
+                <option value="${group.id}" ${group.id === state.adminOTPShare.groupID ? 'selected' : ''}>
+                  ${escHtml(group.name)}（${Number(group.mailbox_count) || 0}）
+                </option>
+              `).join('')}
+            </select>
+            <div class="form-hint">仅筛选下方候选邮箱，不会改变邮箱分组或已有 OTP 分享。</div>
+          </div>
           <div class="form-group">
             <label class="form-label">邮箱地址</label>
             <input class="form-input" id="otp-share-address" list="otp-share-addresses" placeholder="name@example.com" value="${escHtml(state.adminOTPShare.address || '')}" />
             <datalist id="otp-share-addresses">${buildAdminOTPShareOptions(shareMailboxes)}</datalist>
-            <div class="form-hint">支持手动输入；通常直接填你已收藏保存的邮箱。</div>
+            <div class="form-hint">候选仅来自当前分组；仍可手动输入属于当前账号的任意邮箱。</div>
           </div>
           <div class="form-group">
             <label class="form-label">自定义 Token（可选）</label>
@@ -2079,11 +2489,77 @@ async function renderAdminAccounts(container) {
           <div id="otp-share-result-wrap" style="margin-top:1rem">
             ${buildAdminOTPShareResult()}
           </div>
+          <div class="divider"></div>
+          <div class="otp-share-list-header">
+            <div>
+              <div class="form-label" style="margin-bottom:0.15rem">已有分享</div>
+              <div class="form-hint">共 ${otpShares.length} 个，可载入编辑或立即收回。</div>
+            </div>
+          </div>
+          ${buildAdminOTPShareList()}
         </div>
       </div>
     </div>
   `;
 }
+
+window.changeAdminOTPShareGroup = function(groupID) {
+  state.adminOTPShare.groupID = String(groupID || '');
+  state.adminOTPShare.address = String($('otp-share-address')?.value || state.adminOTPShare.address || '').trim();
+  state.adminOTPShare.token = String($('otp-share-token')?.value || state.adminOTPShare.token || '').trim();
+  navigate('admin-accounts');
+};
+
+window.editAdminOTPShare = async function(mailboxID) {
+  const share = (state.adminOTPShare.shares || []).find(item => item.mailbox_id === mailboxID);
+  if (!share) {
+    toast('分享记录不存在或已被收回', 'warn');
+    return;
+  }
+  state.adminOTPShare.share = share;
+  state.adminOTPShare.address = share.full_address || '';
+  state.adminOTPShare.token = share.token || '';
+  try {
+    state.adminOTPShare.mailbox = await api.lookupMailboxByAddress(share.full_address || '');
+  } catch (_) {
+    state.adminOTPShare.mailbox = {
+      id: share.mailbox_id,
+      full_address: share.full_address || '',
+      is_favorite: false,
+    };
+  }
+  navigate('admin-accounts');
+  setTimeout(() => {
+    const input = $('otp-share-token');
+    input?.focus();
+    input?.select();
+  }, 0);
+};
+
+window.confirmRevokeAdminOTPShare = function(mailboxID) {
+  const share = (state.adminOTPShare.shares || []).find(item => item.mailbox_id === mailboxID);
+  if (!share) return;
+  showModal('收回 OTP 分享', `
+    <p>确定收回 <strong>${escHtml(share.full_address || '该邮箱')}</strong> 的 OTP 分享？</p>
+    <p class="form-hint" style="margin-top:0.55rem">现有长链接和接口命令将立即失效。</p>
+  `, async () => {
+    try {
+      await api.deleteMailboxOTPShare(mailboxID);
+      if (state.adminOTPShare.mailbox?.id === mailboxID) {
+        state.adminOTPShare.mailbox = null;
+        state.adminOTPShare.share = null;
+        state.adminOTPShare.address = '';
+        state.adminOTPShare.token = '';
+      }
+      toast('OTP 分享已收回', 'success');
+      navigate('admin-accounts');
+      return true;
+    } catch (error) {
+      toast('收回失败：' + error.message, 'error');
+      return false;
+    }
+  });
+};
 
 async function resolveAdminOTPShareMailbox(requireExistingShare = false) {
   const address = String($('otp-share-address')?.value || '').trim().toLowerCase();
@@ -2938,6 +3414,9 @@ async function renderAdminSettings(container) {
   const defDomain  = settings.default_domain        || '';
   const ttlMins    = settings.mailbox_ttl_minutes   || '30';
   const mailboxPageSize = settings.mailbox_page_size || String(DEFAULT_MAILBOX_PAGE_SIZE);
+  const otpSegmentedEnabled = settings.otp_segmented_enabled === 'true' || settings.otp_segmented_enabled === true;
+  const otpSegmentedLengths = new Set(String(settings.otp_segmented_lengths || '3').split(',').map(item => item.trim()));
+  const otpSegmentedSenders = settings.otp_segmented_senders || '';
   const apiTtlMins = settings.api_mailbox_ttl_minutes || '';
   const catchallEnabled = settings.catchall_enabled === 'true' || settings.catchall_enabled === true;
   const catchallAccountId = settings.catchall_account_id || '';
@@ -3058,6 +3537,37 @@ async function renderAdminSettings(container) {
         ${inputRow('input-mailbox-page-size', '收藏夹/邮箱列表每页显示数量', mailboxPageSize, '默认 6。只改变每页显示数量，不改变面板总高度；调少后底部会留空。建议范围 1-24。', '6', 'mailbox_page_size')}
         <div class="divider"></div>
 
+        <div class="form-group">
+          <label class="form-label">分段 OTP 识别</label>
+          <div class="toggle-wrap" style="margin-bottom:0.75rem">
+            <label class="toggle">
+              <input type="checkbox" id="toggle-otp-segmented" ${otpSegmentedEnabled ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+            <div>
+              <div class="toggle-label">识别带短横线的字母数字验证码</div>
+              <span class="toggle-desc">支持纯字母、字母数字混合和纯数字，并保留短横线。</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem">
+            <label class="form-label" style="display:flex;align-items:center;gap:0.4rem;margin:0">
+              <input type="checkbox" id="otp-segmented-length-3" ${otpSegmentedLengths.has('3') ? 'checked' : ''}>
+              3+3，例如 <code>ABC-DEF</code>
+            </label>
+            <label class="form-label" style="display:flex;align-items:center;gap:0.4rem;margin:0">
+              <input type="checkbox" id="otp-segmented-length-4" ${otpSegmentedLengths.has('4') ? 'checked' : ''}>
+              4+4，例如 <code>ABCD-12EF</code>
+            </label>
+          </div>
+          <label class="form-label">来源邮箱白名单（可选）</label>
+          <textarea class="form-input" id="input-otp-segmented-senders" rows="3" placeholder="noreply@example.com&#10;security@example.com" style="resize:vertical">${escHtml(otpSegmentedSenders)}</textarea>
+          <div class="form-hint">
+            每行一个发件邮箱。留空时对所有邮件启用分段码识别；填写后仅匹配这些发件邮箱，其他邮件继续使用旧规则。
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveSegmentedOTPSettings()" style="margin-top:0.65rem">✓ 保存分段 OTP 设置</button>
+        </div>
+        <div class="divider"></div>
+
         <!-- 邮箱 TTL（API 创建） -->
         ${inputRow('input-api-mailbox-ttl-minutes', 'API 创建邮箱有效期（分钟）', apiTtlMins, '通过 API 创建邮箱时的存活时间。留空 = 复用上方"邮箱有效期"，0 = 永不过期', '留空则与上方一致')}
         <div class="divider"></div>
@@ -3172,6 +3682,29 @@ window.saveSetting = async function(inputId, settingKey) {
     await api.admin.saveSettings({ [settingKey]: val });
     toast('已保存', 'success');
   } catch(e) { toast('保存失败: ' + e.message, 'error'); }
+};
+
+window.saveSegmentedOTPSettings = async function() {
+  const enabled = !!$('toggle-otp-segmented')?.checked;
+  const lengths = [];
+  if ($('otp-segmented-length-3')?.checked) lengths.push('3');
+  if ($('otp-segmented-length-4')?.checked) lengths.push('4');
+  if (lengths.length === 0) {
+    toast('请至少选择 3+3 或 4+4 中的一种格式', 'warn');
+    return;
+  }
+  const senders = String($('input-otp-segmented-senders')?.value || '').trim();
+  try {
+    await api.admin.saveSettings({
+      otp_segmented_enabled: enabled ? 'true' : 'false',
+      otp_segmented_lengths: lengths.join(','),
+      otp_segmented_senders: senders,
+    });
+    toast(enabled ? '分段 OTP 识别已开启' : '分段 OTP 识别设置已保存（当前关闭）', 'success');
+    navigate('admin-settings');
+  } catch (error) {
+    toast('保存失败：' + error.message, 'error');
+  }
 };
 
 // 兼容旧调用

@@ -56,15 +56,26 @@ type Stats struct {
 }
 
 type Mailbox struct {
-	ID               uuid.UUID `json:"id"`
-	AccountID        uuid.UUID `json:"account_id"`
-	Address          string    `json:"address"`
-	DomainID         int       `json:"domain_id"`
-	FullAddress      string    `json:"full_address"`
-	IsFavorite       bool      `json:"is_favorite"`
-	TGForwardEnabled bool      `json:"tg_forward_enabled"`
-	CreatedAt        time.Time `json:"created_at"`
-	ExpiresAt        time.Time `json:"expires_at"`
+	ID               uuid.UUID  `json:"id"`
+	AccountID        uuid.UUID  `json:"account_id"`
+	Address          string     `json:"address"`
+	DomainID         int        `json:"domain_id"`
+	FullAddress      string     `json:"full_address"`
+	IsFavorite       bool       `json:"is_favorite"`
+	TGForwardEnabled bool       `json:"tg_forward_enabled"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	FavoriteGroupID  *uuid.UUID `json:"favorite_group_id,omitempty"`
+}
+
+type FavoriteGroup struct {
+	ID           uuid.UUID `json:"id"`
+	AccountID    uuid.UUID `json:"account_id"`
+	Name         string    `json:"name"`
+	SortOrder    int       `json:"sort_order"`
+	MailboxCount int       `json:"mailbox_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type MailboxOTPShare struct {

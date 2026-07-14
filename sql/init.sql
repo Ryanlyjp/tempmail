@@ -83,6 +83,32 @@ CREATE INDEX idx_mailboxes_expires_at ON mailboxes (expires_at);
 -- 收藏邮箱索引（清理任务跳过收藏邮箱时用）
 CREATE INDEX idx_mailboxes_favorite ON mailboxes (is_favorite) WHERE is_favorite = TRUE;
 
+-- 收藏夹分组
+CREATE TABLE favorite_groups (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id   UUID        NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name         VARCHAR(64) NOT NULL,
+    sort_order   INT         NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX idx_favorite_groups_account_name
+    ON favorite_groups (account_id, LOWER(name));
+CREATE INDEX idx_favorite_groups_account_sort
+    ON favorite_groups (account_id, sort_order, created_at);
+
+ALTER TABLE mailboxes
+    ADD COLUMN favorite_group_id UUID REFERENCES favorite_groups(id) ON DELETE SET NULL;
+CREATE INDEX idx_mailboxes_favorite_group
+    ON mailboxes (account_id, favorite_group_id, created_at DESC)
+    WHERE is_favorite = TRUE;
+
+CREATE TABLE favorite_group_preferences (
+    account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    group_id   UUID REFERENCES favorite_groups(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ============================================================
 -- 5. 邮件表 (emails)
 -- ============================================================
@@ -124,6 +150,9 @@ INSERT INTO app_settings (key, value) VALUES ('registration_open', 'true') ON CO
 INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('otp_segmented_enabled', 'false') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('otp_segmented_lengths', '3') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('otp_segmented_senders', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('catchall_enabled', 'false') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('catchall_account_id', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('cf_api_token', '') ON CONFLICT DO NOTHING;

@@ -24,6 +24,22 @@ func NewOTPShareHandler(s *store.Store) *OTPShareHandler {
 	return &OTPShareHandler{store: s}
 }
 
+// GET /api/otp-shares - 列出当前账号名下的所有邮箱级 OTP 分享
+func (h *OTPShareHandler) List(c *gin.Context) {
+	account := middleware.GetAccount(c)
+	shares, err := h.store.ListMailboxOTPShares(c.Request.Context(), account.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	items := make([]gin.H, 0, len(shares))
+	for i := range shares {
+		items = append(items, buildOTPShareResponse(c, &shares[i]))
+	}
+	c.JSON(http.StatusOK, gin.H{"shares": items, "total": len(items)})
+}
+
 // GET /api/mailboxes/:id/otp-share - 查看当前邮箱的 OTP 分享链接
 func (h *OTPShareHandler) Get(c *gin.Context) {
 	account := middleware.GetAccount(c)
@@ -135,7 +151,7 @@ func (h *OTPShareHandler) PublicLatest(c *gin.Context) {
 		return
 	}
 
-	code := extractLatestOTPCode(email)
+	code := extractLatestOTPCode(email, loadOTPExtractionConfig(c.Request.Context(), h.store))
 	if code == "" {
 		h.respondOTPErr(c, http.StatusUnprocessableEntity, "otp not found in latest email")
 		return
