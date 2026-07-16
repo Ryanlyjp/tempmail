@@ -211,6 +211,25 @@ function buildEmailAttachments(mailboxId, emailId, attachments) {
   `;
 }
 
+function buildEmailRecipientMeta(deliveryAddress, originalRecipient) {
+  const delivery = String(deliveryAddress || '—').trim();
+  const original = String(originalRecipient || delivery || '—').trim();
+  const extractAddress = value => {
+    const angle = value.match(/<([^<>@\s]+@[^<>@\s]+)>/);
+    const plain = value.match(/[^<>@\s]+@[^<>@\s]+/);
+    return String(angle?.[1] || plain?.[0] || value).toLowerCase();
+  };
+
+  if (extractAddress(original) === extractAddress(delivery)) {
+    return `<span>收件人：<strong>${escHtml(original)}</strong></span>`;
+  }
+  return `
+    <span>原始收件人：<strong>${escHtml(original)}</strong></span>
+    <span style="margin:0 0.3rem">·</span>
+    <span>接收邮箱：<strong>${escHtml(delivery)}</strong></span>
+  `;
+}
+
 function isMailboxForwardEnabled(mailbox) {
   return !!mailbox?.tg_forward_enabled;
 }
@@ -1445,6 +1464,7 @@ async function paneRenderEmailView() {
 
   const fromAddr = e.sender || e.from_addr || '—';
   const toAddr   = mb.full_address || '—';
+  const recipientMeta = buildEmailRecipientMeta(toAddr, e.recipient);
   const htmlBody = e.body_html || e.html_body || '';
   const textBody = e.body_text || e.text_body || '';
   const subject = e.subject || '(无主题)';
@@ -1469,7 +1489,7 @@ async function paneRenderEmailView() {
       <div class="email-info-row">
         <span>发件人：<strong>${escHtml(fromAddr)}</strong></span>
         <span style="margin:0 0.3rem">·</span>
-        <span>收件人：<strong>${escHtml(toAddr)}</strong></span>
+        ${recipientMeta}
         <span style="margin:0 0.3rem">·</span>
         <span>${formatDate(e.received_at)}</span>
         ${attachments.length ? `<span style="margin:0 0.3rem">·</span><span>附件 ${attachments.length}</span>` : ''}
@@ -2084,6 +2104,7 @@ async function renderEmailView(container) {
   const e = await api.getEmail(mb.id, eid);
   const fromAddr = e.sender || e.from_addr || '—';
   const toAddr   = mb.full_address || state.currentMailbox?.full_address || '—';
+  const recipientMeta = buildEmailRecipientMeta(toAddr, e.recipient);
   const htmlBody  = e.body_html || e.html_body || '';
   const textBody  = e.body_text || e.text_body || '';
   const attachments = Array.isArray(e.attachments) ? e.attachments : [];
@@ -2098,7 +2119,7 @@ async function renderEmailView(container) {
         <div class="email-info-row">
           <span>发件人：<strong>${escHtml(fromAddr)}</strong></span>
           <span style="margin:0 0.3rem">·</span>
-          <span>收件人：<strong>${escHtml(toAddr)}</strong></span>
+          ${recipientMeta}
           <span style="margin:0 0.3rem">·</span>
           <span>${formatDate(e.received_at)}</span>
           ${attachments.length ? `<span style="margin:0 0.3rem">·</span><span>附件 ${attachments.length}</span>` : ''}

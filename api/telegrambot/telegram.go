@@ -260,8 +260,12 @@ func buildFullMessageText(mailbox model.Mailbox, email model.Email, attachments 
 
 func appendMessageHeader(b *strings.Builder, title string, mailbox model.Mailbox, email model.Email, attachments []mailutil.ParsedAttachment) {
 	b.WriteString(title)
-	b.WriteString("\n邮箱: ")
+	b.WriteString("\n接收邮箱: ")
 	b.WriteString(mailbox.FullAddress)
+	if recipient := mailutil.OriginalRecipient(email.RawMessage); recipient != "" {
+		b.WriteString("\n原始收件人: ")
+		b.WriteString(recipient)
+	}
 	b.WriteString("\n发件人: ")
 	b.WriteString(fallback(email.Sender, "—"))
 	b.WriteString("\n主题: ")

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/textproto"
+	"regexp"
 	"strings"
 
 	"tempmail/model"
@@ -21,25 +22,57 @@ type ParsedAttachment struct {
 	Data []byte
 }
 
+type inlineResource struct {
+	ContentID       string
+	ContentLocation string
+	Filename        string
+	ContentType     string
+	Data            []byte
+}
+
+type parsedAssets struct {
+	attachments []ParsedAttachment
+	inline      []inlineResource
+}
+
 func ParseAttachments(raw string) ([]ParsedAttachment, error) {
+	assets, err := parseAssets(raw)
+	if err != nil {
+		return nil, err
+	}
+	return assets.attachments, nil
+}
+
+func ParseAttachmentsAndInlineHTML(raw, bodyHTML string) ([]ParsedAttachment, string, error) {
+	assets, err := parseAssets(raw)
+	if err != nil {
+		return nil, bodyHTML, err
+	}
+	return assets.attachments, embedInlineResources(bodyHTML, assets.inline), nil
+}
+
+func parseAssets(raw string) (parsedAssets, error) {
 	if strings.TrimSpace(raw) == "" {
-		return nil, nil
+		return parsedAssets{}, nil
 	}
 
 	msg, err := mail.ReadMessage(strings.NewReader(raw))
 	if err != nil {
-		return nil, err
+		return parsedAssets{}, err
 	}
 
-	items := make([]ParsedAttachment, 0, 4)
-	nextID := 0
-	if err := collectAttachments(textproto.MIMEHeader(msg.Header), msg.Body, &nextID, &items); err != nil {
-		return nil, err
+	assets := parsedAssets{
+		attachments: make([]ParsedAttachment, 0, 4),
+		inline:      make([]inlineResource, 0, 4),
 	}
-	return items, nil
+	nextID := 0
+	if err := collectAssets(textproto.MIMEHeader(msg.Header), msg.Body, &nextID, &assets); err != nil {
+		return parsedAssets{}, err
+	}
+	return assets, nil
 }
 
-func collectAttachments(header textproto.MIMEHeader, body io.Reader, nextID *int, items *[]ParsedAttachment) error {
+func collectAssets(header textproto.MIMEHeader, body io.Reader, nextID *int, assets *parsedAssets) error {
 	contentType := header.Get("Content-Type")
 	mediaType, typeParams, err := mime.ParseMediaType(contentType)
 	if err != nil {
@@ -68,7 +101,7 @@ func collectAttachments(header textproto.MIMEHeader, body io.Reader, nextID *int
 			if err != nil {
 				return err
 			}
-			if err := collectAttachments(part.Header, part, nextID, items); err != nil {
+			if err := collectAssets(part.Header, part, nextID, assets); err != nil {
 				return err
 			}
 		}
@@ -82,11 +115,12 @@ func collectAttachments(header textproto.MIMEHeader, body io.Reader, nextID *int
 	)
 	filename = decodeAttachmentFilename(filename)
 
-	isInline := strings.EqualFold(disposition, "inline")
-	isAttachment := strings.EqualFold(disposition, "attachment") ||
-		(filename != "" && strings.EqualFold(disposition, "inline")) ||
-		(filename != "" && disposition == "")
-	if !isAttachment {
+	isExplicitAttachment := strings.EqualFold(disposition, "attachment")
+	contentID := normalizeContentID(header.Get("Content-ID"))
+	isInline := !isExplicitAttachment &&
+		(strings.EqualFold(disposition, "inline") || contentID != "")
+	isAttachment := isExplicitAttachment || (filename != "" && !isInline)
+	if !isInline && !isAttachment {
 		return nil
 	}
 
@@ -95,28 +129,77 @@ func collectAttachments(header textproto.MIMEHeader, body io.Reader, nextID *int
 		return err
 	}
 
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+
+	if isInline {
+		assets.inline = append(assets.inline, inlineResource{
+			ContentID:       contentID,
+			ContentLocation: strings.TrimSpace(header.Get("Content-Location")),
+			Filename:        filename,
+			ContentType:     mediaType,
+			Data:            data,
+		})
+		return nil
+	}
+
 	*nextID = *nextID + 1
 	if filename == "" {
 		filename = fallbackAttachmentName(*nextID, mediaType)
 	}
 	filename = sanitizeAttachmentFilename(filename, *nextID, mediaType)
 
-	if mediaType == "" {
-		mediaType = http.DetectContentType(data)
-	}
-
-	*items = append(*items, ParsedAttachment{
+	assets.attachments = append(assets.attachments, ParsedAttachment{
 		Attachment: model.Attachment{
 			ID:          *nextID,
 			Filename:    filename,
 			ContentType: mediaType,
 			SizeBytes:   len(data),
-			Inline:      isInline,
+			Inline:      false,
 		},
 		Data: data,
 	})
 
 	return nil
+}
+
+func embedInlineResources(bodyHTML string, resources []inlineResource) string {
+	if strings.TrimSpace(bodyHTML) == "" || len(resources) == 0 {
+		return bodyHTML
+	}
+
+	rendered := bodyHTML
+	for _, resource := range resources {
+		if len(resource.Data) == 0 || !strings.HasPrefix(strings.ToLower(resource.ContentType), "image/") {
+			continue
+		}
+
+		dataURL := "data:" + resource.ContentType + ";base64," +
+			base64.StdEncoding.EncodeToString(resource.Data)
+		if resource.ContentID != "" {
+			rendered = replaceCaseInsensitive(rendered, "cid:"+resource.ContentID, dataURL)
+			rendered = replaceCaseInsensitive(rendered, "cid:<"+resource.ContentID+">", dataURL)
+		}
+		if resource.ContentLocation != "" {
+			rendered = replaceCaseInsensitive(rendered, resource.ContentLocation, dataURL)
+		}
+	}
+	return rendered
+}
+
+func replaceCaseInsensitive(value, old, replacement string) string {
+	if old == "" {
+		return value
+	}
+	re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(old))
+	return re.ReplaceAllStringFunc(value, func(string) string {
+		return replacement
+	})
+}
+
+func normalizeContentID(value string) string {
+	return strings.Trim(strings.TrimSpace(value), "<>")
 }
 
 func readTransferDecodedBody(body io.Reader, encoding string) ([]byte, error) {

@@ -94,6 +94,7 @@ type Email struct {
 	BodyText    string       `json:"body_text"`
 	BodyHTML    string       `json:"body_html"`
 	RawMessage  string       `json:"raw_message,omitempty"`
+	Recipient   string       `json:"recipient,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	SizeBytes   int          `json:"size_bytes"`
 	ReceivedAt  time.Time    `json:"received_at"`

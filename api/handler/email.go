@@ -77,7 +77,7 @@ func (h *EmailHandler) Get(c *gin.Context) {
 	}
 
 	// 验证邮箱归属
-	_, err = h.store.GetMailbox(c.Request.Context(), mailboxID, account.ID)
+	mailbox, err := h.store.GetMailbox(c.Request.Context(), mailboxID, account.ID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
 		return
@@ -95,11 +95,17 @@ func (h *EmailHandler) Get(c *gin.Context) {
 		return
 	}
 
-	attachments, err := mailutil.ParseAttachments(email.RawMessage)
+	email.Recipient = mailutil.OriginalRecipient(email.RawMessage)
+	if email.Recipient == "" {
+		email.Recipient = mailbox.FullAddress
+	}
+
+	attachments, renderedHTML, err := mailutil.ParseAttachmentsAndInlineHTML(email.RawMessage, email.BodyHTML)
 	if err != nil {
 		log.Printf("[attachments] parse email %s failed: %v", email.ID, err)
 	} else {
 		email.Attachments = mailutil.Meta(attachments)
+		email.BodyHTML = renderedHTML
 	}
 
 	c.JSON(http.StatusOK, gin.H{"email": email})
