@@ -22,21 +22,8 @@ import urllib.error
 API_URL = os.environ.get("API_URL", "http://api:8080")
 
 
-def main():
-    # 从命令行参数获取收件人
-    if len(sys.argv) < 2:
-        print("Usage: mail-receiver <recipient>", file=sys.stderr)
-        sys.exit(1)
-
-    recipient = sys.argv[1].lower().strip()
-
-    # 从 stdin 读取原始邮件
-    raw = sys.stdin.read()
-    if not raw:
-        sys.exit(0)
-
-    # 解析 MIME 邮件
-    msg = email.message_from_string(raw, policy=email.policy.default)
+def parse_email(raw_bytes):
+    msg = email.message_from_bytes(raw_bytes, policy=email.policy.default)
 
     sender = msg.get("From", "")
     subject = msg.get("Subject", "")
@@ -57,6 +44,26 @@ def main():
             body_html = content
         else:
             body_text = content
+
+    return sender, subject, body_text, body_html
+
+
+def main():
+    # 从命令行参数获取收件人
+    if len(sys.argv) < 2:
+        print("Usage: mail-receiver <recipient>", file=sys.stderr)
+        sys.exit(1)
+
+    recipient = sys.argv[1].lower().strip()
+
+    # 从 stdin 读取原始邮件
+    raw_bytes = sys.stdin.buffer.read()
+    if not raw_bytes:
+        sys.exit(0)
+
+    # MIME 解析必须使用原始字节，否则 8bit UTF-8 正文会变成字面量 \uXXXX。
+    sender, subject, body_text, body_html = parse_email(raw_bytes)
+    raw = raw_bytes.decode("utf-8", errors="replace")
 
     # 发送到 API
     payload = json.dumps(
