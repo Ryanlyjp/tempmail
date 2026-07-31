@@ -1,7 +1,7 @@
 'use strict';
 
-const shareToken = location.pathname.split('/').filter(Boolean).pop() || '';
-const shareBase = `/public/otp-share/page/${encodeURIComponent(shareToken)}`;
+const shareAPIKey = location.pathname.split('/').filter(Boolean).pop() || '';
+const shareBase = `/public/otp-share/page/${encodeURIComponent(shareAPIKey)}`;
 const $share = id => document.getElementById(id);
 
 function shareEscape(value) {
@@ -23,6 +23,32 @@ function shareToast(message, type = 'error') {
   setTimeout(() => toast.remove(), 4000);
 }
 
+async function shareCopyText(text) {
+  const value = String(text || '');
+  if (!value) return false;
+  let textarea = null;
+  try {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      if (!document.execCommand('copy')) throw new Error('copy command failed');
+    }
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    textarea?.remove();
+  }
+}
+
 async function shareFetch(path) {
   const response = await fetch(path, { headers: { Accept: 'application/json' } });
   const data = await response.json().catch(() => ({}));
@@ -30,10 +56,14 @@ async function shareFetch(path) {
   return data;
 }
 
-function renderSharedOTP(otp) {
+async function renderSharedOTP(otp) {
   $share('share-otp-result').textContent = otp.code || '未找到';
   $share('share-otp-result').classList.add('is-ready');
   $share('share-otp-meta').textContent = `${otp.subject || '(无主题)'} · ${shareFormatTime(otp.received_at)}`;
+  if (otp.code) {
+    const copied = await shareCopyText(otp.code);
+    shareToast(copied ? `OTP 已复制：${otp.code}` : 'OTP 已提取，请手动复制', copied ? 'success' : 'warn');
+  }
 }
 
 function renderSharedEmails(emails) {
@@ -93,7 +123,7 @@ async function loadSharedEmail(emailID, button) {
     $share('share-email-otp-btn').addEventListener('click', async () => {
       try {
         const otpData = await shareFetch(`${shareBase}/emails/${encodeURIComponent(emailID)}/otp`);
-        renderSharedOTP(otpData.otp || {});
+        await renderSharedOTP(otpData.otp || {});
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } catch (error) {
         shareToast(error.message, 'warn');
@@ -112,7 +142,7 @@ async function loadSharedMailbox() {
 
 async function loadSharedLatestOTP() {
   const data = await shareFetch(`${shareBase}/latest`);
-  renderSharedOTP(data.otp || {});
+  await renderSharedOTP(data.otp || {});
 }
 
 async function loadSharedEmails() {

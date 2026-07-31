@@ -95,12 +95,12 @@ func main() {
 		public.GET("/otp-share/emails/:email_id", otpShareH.APIKeyEmail)
 		public.GET("/otp-share/emails/:email_id/otp", otpShareH.APIKeyEmailOTP)
 		public.GET("/otp-share/emails/:email_id/attachments/:attachment_id", otpShareH.APIKeyAttachment)
-		public.GET("/otp-share/page/:token/mailbox", otpShareH.PageMailbox)
-		public.GET("/otp-share/page/:token/latest", otpShareH.PageLatest)
-		public.GET("/otp-share/page/:token/emails", otpShareH.PageEmails)
-		public.GET("/otp-share/page/:token/emails/:email_id", otpShareH.PageEmail)
-		public.GET("/otp-share/page/:token/emails/:email_id/otp", otpShareH.PageEmailOTP)
-		public.GET("/otp-share/page/:token/emails/:email_id/attachments/:attachment_id", otpShareH.PageAttachment)
+		public.GET("/otp-share/page/:api_key/mailbox", otpShareH.PageMailbox)
+		public.GET("/otp-share/page/:api_key/latest", otpShareH.PageLatest)
+		public.GET("/otp-share/page/:api_key/emails", otpShareH.PageEmails)
+		public.GET("/otp-share/page/:api_key/emails/:email_id", otpShareH.PageEmail)
+		public.GET("/otp-share/page/:api_key/emails/:email_id/otp", otpShareH.PageEmailOTP)
+		public.GET("/otp-share/page/:api_key/emails/:email_id/attachments/:attachment_id", otpShareH.PageAttachment)
 	}
 
 	// API 路由组（需要认证 + 速率限制）

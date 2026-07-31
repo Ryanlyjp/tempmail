@@ -24,7 +24,6 @@ type OTPShareHandler struct {
 }
 
 var (
-	otpShareTokenPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{5,63}$`)
 	otpShareAPIKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{15,95}$`)
 )
 
@@ -80,12 +79,10 @@ func (h *OTPShareHandler) Upsert(c *gin.Context) {
 	}
 
 	var req struct {
-		Token           string `json:"token"`
-		APIKey          string `json:"api_key"`
-		Enabled         *bool  `json:"enabled"`
-		ExpiresDays     *int   `json:"expires_days"`
-		RegenerateToken bool   `json:"regenerate_token"`
-		RotateAPIKey    bool   `json:"rotate_api_key"`
+		APIKey       string `json:"api_key"`
+		Enabled      *bool  `json:"enabled"`
+		ExpiresDays  *int   `json:"expires_days"`
+		RotateAPIKey bool   `json:"rotate_api_key"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil && !strings.Contains(err.Error(), "EOF") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -98,23 +95,12 @@ func (h *OTPShareHandler) Upsert(c *gin.Context) {
 		return
 	}
 
-	token, apiKey, enabled := "", "", true
+	apiKey, enabled := "", true
 	var expiresAt *time.Time
 	if existing != nil {
-		token = existing.Token
 		apiKey = existing.APIKey
 		enabled = existing.Enabled
 		expiresAt = existing.ExpiresAt
-	}
-	if req.RegenerateToken {
-		token = ""
-	}
-	if strings.TrimSpace(req.Token) != "" {
-		token, err = normalizeOTPShareToken(req.Token)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
 	}
 	if req.RotateAPIKey {
 		apiKey = ""
@@ -138,14 +124,12 @@ func (h *OTPShareHandler) Upsert(c *gin.Context) {
 	}
 
 	share, err := h.store.UpsertMailboxOTPShare(
-		c.Request.Context(), mailboxID, account.ID, token, apiKey, enabled, expiresAt,
+		c.Request.Context(), mailboxID, account.ID, apiKey, enabled, expiresAt,
 	)
 	if err != nil {
 		switch err {
 		case pgx.ErrNoRows:
 			c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
-		case store.ErrMailboxOTPShareTokenConflict:
-			c.JSON(http.StatusConflict, gin.H{"error": "share token already in use"})
 		case store.ErrMailboxOTPShareAPIKeyConflict:
 			c.JSON(http.StatusConflict, gin.H{"error": "share api key already in use"})
 		default:
@@ -278,7 +262,7 @@ func (h *OTPShareHandler) requireAPIKeyShare(c *gin.Context) *model.MailboxOTPSh
 }
 
 func (h *OTPShareHandler) requirePageShare(c *gin.Context) *model.MailboxOTPShare {
-	share, err := h.store.GetMailboxOTPShareByToken(c.Request.Context(), strings.TrimSpace(c.Param("token")))
+	share, err := h.store.GetMailboxOTPShareByAPIKey(c.Request.Context(), strings.TrimSpace(c.Param("api_key")))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "share not found, stopped or expired"})
@@ -426,13 +410,12 @@ func (h *OTPShareHandler) respondOTPErr(c *gin.Context, status int, msg string) 
 
 func buildOTPShareResponse(c *gin.Context, share *model.MailboxOTPShare) gin.H {
 	origin := fmt.Sprintf("%s://%s", detectRequestScheme(c), c.Request.Host)
-	pageURL := fmt.Sprintf("%s/otp-share/%s", origin, share.Token)
+	pageURL := fmt.Sprintf("%s/otp-share/%s", origin, share.APIKey)
 	latestAPI := origin + "/public/otp-share/latest"
 	emailsAPI := origin + "/public/otp-share/emails"
 	return gin.H{
 		"mailbox_id":     share.MailboxID,
 		"full_address":   share.FullAddress,
-		"token":          share.Token,
 		"api_key":        share.APIKey,
 		"enabled":        share.Enabled,
 		"expired":        share.ExpiresAt != nil && !share.ExpiresAt.After(time.Now()),
@@ -453,17 +436,6 @@ func extractOTPShareAPIKey(c *gin.Context) string {
 		return strings.TrimSpace(authorization[7:])
 	}
 	return strings.TrimSpace(c.Query("api_key"))
-}
-
-func normalizeOTPShareToken(raw string) (string, error) {
-	token := strings.TrimSpace(raw)
-	if token == "" {
-		return "", nil
-	}
-	if !otpShareTokenPattern.MatchString(token) {
-		return "", fmt.Errorf("invalid token: use 6-64 chars of letters, numbers, _ or -")
-	}
-	return token, nil
 }
 
 func normalizeOTPShareAPIKey(raw string) (string, error) {

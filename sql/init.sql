@@ -129,8 +129,8 @@ CREATE INDEX idx_emails_mailbox_received ON emails (mailbox_id, received_at DESC
 
 CREATE TABLE mailbox_otp_shares (
     mailbox_id UUID PRIMARY KEY REFERENCES mailboxes(id) ON DELETE CASCADE,
-    token      VARCHAR(96) NOT NULL UNIQUE,
-    api_key    VARCHAR(96) UNIQUE,
+    token      VARCHAR(96) NOT NULL UNIQUE, -- compatibility mirror of api_key
+    api_key    VARCHAR(96) NOT NULL UNIQUE,
     enabled    BOOLEAN NOT NULL DEFAULT TRUE,
     expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"tempmail/model"
+
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func TestNormalizeOTPShareAPIKey(t *testing.T) {
@@ -41,19 +44,41 @@ func TestOTPShareExpiry(t *testing.T) {
 	}
 }
 
-func TestPageTokenCannotAuthenticateAPIKeyRoute(t *testing.T) {
+func TestExtractOTPShareAPIKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest("GET", "/public/otp-share/latest", nil)
-	ctx.Params = gin.Params{{Key: "token", Value: "page_token_123456"}}
-
-	if got := extractOTPShareAPIKey(ctx); got != "" {
-		t.Fatalf("page token authenticated api route: %q", got)
-	}
 
 	ctx.Request.Header.Set("Authorization", "Bearer share_key_1234567890")
 	if got := extractOTPShareAPIKey(ctx); got != "share_key_1234567890" {
 		t.Fatalf("bearer api key = %q", got)
+	}
+
+	ctx.Request.Header.Del("Authorization")
+	ctx.Request = httptest.NewRequest("GET", "/public/otp-share/latest?api_key=query_share_key_123", nil)
+	if got := extractOTPShareAPIKey(ctx); got != "query_share_key_123" {
+		t.Fatalf("query api key = %q", got)
+	}
+}
+
+func TestOTPShareResponseUsesSingleAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest("GET", "http://mail.example/api/otp-shares", nil)
+	share := &model.MailboxOTPShare{
+		MailboxID:   uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		FullAddress: "shared@example.com",
+		APIKey:      "share_key_1234567890",
+		Enabled:     true,
+	}
+
+	response := buildOTPShareResponse(ctx, share)
+	if got := response["url"]; got != "http://mail.example/otp-share/share_key_1234567890" {
+		t.Fatalf("page url = %v", got)
+	}
+	if _, exists := response["token"]; exists {
+		t.Fatal("management response exposed a second page credential")
 	}
 }

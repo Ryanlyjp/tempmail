@@ -530,6 +530,12 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   gap: 1rem;
   align-items: start;
 }
+.account-admin-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
 
 .otp-share-actions {
   display: flex;
@@ -563,13 +569,6 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.7;
-}
-.otp-share-list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.7rem;
-  margin-bottom: 0.75rem;
 }
 .otp-share-list {
   display: flex;

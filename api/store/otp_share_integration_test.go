@@ -75,12 +75,27 @@ func TestMailboxOTPShareIsolationAndState(t *testing.T) {
 	}
 	otherEmailID = otherEmail.ID
 
-	shareA, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, "page_token_first", "share_api_key_first_1234", true, nil)
+	shareA, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, "share_api_key_first_1234", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpsertMailboxOTPShare(ctx, mailboxB, accountID, "page_token_second", "share_api_key_second_123", true, nil); err != nil {
+	if _, err := s.UpsertMailboxOTPShare(ctx, mailboxB, accountID, "share_api_key_second_123", true, nil); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE mailbox_otp_shares SET token = $1 WHERE mailbox_id = $2`,
+		"legacy_page_token_first", mailboxA,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ensureSchemaCompat(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var mirroredToken string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT token FROM mailbox_otp_shares WHERE mailbox_id = $1`, mailboxA,
+	).Scan(&mirroredToken); err != nil || mirroredToken != shareA.APIKey {
+		t.Fatalf("migrated page credential = %q, want %q, err=%v", mirroredToken, shareA.APIKey, err)
 	}
 	resolved, err := s.GetMailboxOTPShareByAPIKey(ctx, shareA.APIKey)
 	if err != nil || resolved.MailboxID != mailboxA {
@@ -95,7 +110,7 @@ func TestMailboxOTPShareIsolationAndState(t *testing.T) {
 		t.Fatalf("recent emails len=%d total=%d err=%v", len(emails), total, err)
 	}
 
-	if _, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, shareA.Token, shareA.APIKey, false, nil); err != nil {
+	if _, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, shareA.APIKey, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.GetMailboxOTPShareByAPIKey(ctx, shareA.APIKey); !errors.Is(err, pgx.ErrNoRows) {
@@ -103,10 +118,10 @@ func TestMailboxOTPShareIsolationAndState(t *testing.T) {
 	}
 
 	expiredAt := time.Now().Add(-time.Minute)
-	if _, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, shareA.Token, shareA.APIKey, true, &expiredAt); err != nil {
+	if _, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, shareA.APIKey, true, &expiredAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetMailboxOTPShareByToken(ctx, shareA.Token); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := s.GetMailboxOTPShareByAPIKey(ctx, shareA.APIKey); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("expired share remained accessible: %v", err)
 	}
 }
