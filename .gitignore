@@ -18,4 +18,4 @@ api/*.exe
 .DS_Store
 Thumbs.db
 
-PLAN_SUBDOMAIN.md
+progress.md

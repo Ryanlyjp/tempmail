@@ -23,6 +23,7 @@ type Store struct {
 }
 
 var ErrMailboxOTPShareTokenConflict = errors.New("mailbox otp share token already exists")
+var ErrMailboxOTPShareAPIKeyConflict = errors.New("mailbox otp share api key already exists")
 
 type DomainFilter struct {
 	Status   string
@@ -187,11 +188,22 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS mailbox_otp_shares (
 			mailbox_id UUID PRIMARY KEY REFERENCES mailboxes(id) ON DELETE CASCADE,
 			token VARCHAR(96) NOT NULL UNIQUE,
+			api_key VARCHAR(96) UNIQUE,
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			expires_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE mailbox_otp_shares
+			ADD COLUMN IF NOT EXISTS api_key VARCHAR(96)`,
+		`ALTER TABLE mailbox_otp_shares
+			ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE mailbox_otp_shares
+			ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
 		`CREATE INDEX IF NOT EXISTS idx_mailbox_otp_shares_token
 			ON mailbox_otp_shares (token)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_otp_shares_api_key
+			ON mailbox_otp_shares (api_key) WHERE api_key IS NOT NULL`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '')
@@ -914,12 +926,14 @@ func (s *Store) GetMailboxByFullAddressForAccount(ctx context.Context, fullAddre
 func (s *Store) GetMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID) (*model.MailboxOTPShare, error) {
 	var share model.MailboxOTPShare
 	err := s.pool.QueryRow(ctx,
-		`SELECT s.mailbox_id, m.full_address, s.token, s.created_at, s.updated_at
+		`SELECT s.mailbox_id, m.full_address, s.token, COALESCE(s.api_key, ''),
+		        s.enabled, s.expires_at, s.created_at, s.updated_at
 		 FROM mailbox_otp_shares s
 		 JOIN mailboxes m ON m.id = s.mailbox_id
 		 WHERE s.mailbox_id = $1 AND m.account_id = $2`,
 		mailboxID, accountID,
-	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.CreatedAt, &share.UpdatedAt)
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.APIKey,
+		&share.Enabled, &share.ExpiresAt, &share.CreatedAt, &share.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -928,7 +942,8 @@ func (s *Store) GetMailboxOTPShare(ctx context.Context, mailboxID, accountID uui
 
 func (s *Store) ListMailboxOTPShares(ctx context.Context, accountID uuid.UUID) ([]model.MailboxOTPShare, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT s.mailbox_id, m.full_address, s.token, s.created_at, s.updated_at
+		`SELECT s.mailbox_id, m.full_address, s.token, COALESCE(s.api_key, ''),
+		        s.enabled, s.expires_at, s.created_at, s.updated_at
 		 FROM mailbox_otp_shares s
 		 JOIN mailboxes m ON m.id = s.mailbox_id
 		 WHERE m.account_id = $1
@@ -947,10 +962,14 @@ func (s *Store) ListMailboxOTPShares(ctx context.Context, accountID uuid.UUID) (
 	return shares, nil
 }
 
-func (s *Store) UpsertMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID, token string) (*model.MailboxOTPShare, error) {
+func (s *Store) UpsertMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID, token, apiKey string, enabled bool, expiresAt *time.Time) (*model.MailboxOTPShare, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		token = generateMailboxOTPShareToken()
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		apiKey = generateMailboxOTPShareAPIKey()
 	}
 
 	var existingMailboxID uuid.UUID
@@ -964,6 +983,16 @@ func (s *Store) UpsertMailboxOTPShare(ctx context.Context, mailboxID, accountID 
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}
+	err = s.pool.QueryRow(ctx,
+		`SELECT mailbox_id FROM mailbox_otp_shares WHERE api_key = $1`,
+		apiKey,
+	).Scan(&existingMailboxID)
+	if err == nil && existingMailboxID != mailboxID {
+		return nil, ErrMailboxOTPShareAPIKeyConflict
+	}
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
 
 	var share model.MailboxOTPShare
 	err = s.pool.QueryRow(ctx,
@@ -973,22 +1002,30 @@ func (s *Store) UpsertMailboxOTPShare(ctx context.Context, mailboxID, accountID 
 			WHERE id = $1 AND account_id = $2
 		),
 		upserted AS (
-			INSERT INTO mailbox_otp_shares (mailbox_id, token)
-			SELECT owned.id, $3
+			INSERT INTO mailbox_otp_shares (mailbox_id, token, api_key, enabled, expires_at)
+			SELECT owned.id, $3, $4, $5, $6
 			FROM owned
 			ON CONFLICT (mailbox_id) DO UPDATE
 				SET token = EXCLUDED.token,
+				    api_key = EXCLUDED.api_key,
+				    enabled = EXCLUDED.enabled,
+				    expires_at = EXCLUDED.expires_at,
 				    updated_at = NOW()
-			RETURNING mailbox_id, token, created_at, updated_at
+			RETURNING mailbox_id, token, api_key, enabled, expires_at, created_at, updated_at
 		)
-		SELECT upserted.mailbox_id, owned.full_address, upserted.token, upserted.created_at, upserted.updated_at
+		SELECT upserted.mailbox_id, owned.full_address, upserted.token, upserted.api_key,
+		       upserted.enabled, upserted.expires_at, upserted.created_at, upserted.updated_at
 		FROM upserted
 		JOIN owned ON owned.id = upserted.mailbox_id`,
-		mailboxID, accountID, token,
-	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.CreatedAt, &share.UpdatedAt)
+		mailboxID, accountID, token, apiKey, enabled, expiresAt,
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.APIKey,
+		&share.Enabled, &share.ExpiresAt, &share.CreatedAt, &share.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "mailbox_otp_shares_token_key") {
 			return nil, ErrMailboxOTPShareTokenConflict
+		}
+		if strings.Contains(err.Error(), "mailbox_otp_shares_api_key") {
+			return nil, ErrMailboxOTPShareAPIKeyConflict
 		}
 		return nil, err
 	}
@@ -1016,12 +1053,35 @@ func (s *Store) DeleteMailboxOTPShare(ctx context.Context, mailboxID, accountID 
 func (s *Store) GetMailboxOTPShareByToken(ctx context.Context, token string) (*model.MailboxOTPShare, error) {
 	var share model.MailboxOTPShare
 	err := s.pool.QueryRow(ctx,
-		`SELECT s.mailbox_id, m.full_address, s.token, s.created_at, s.updated_at
+		`SELECT s.mailbox_id, m.full_address, s.token, COALESCE(s.api_key, ''),
+		        s.enabled, s.expires_at, s.created_at, s.updated_at
 		 FROM mailbox_otp_shares s
 		 JOIN mailboxes m ON m.id = s.mailbox_id
-		 WHERE s.token = $1`,
+		 WHERE s.token = $1
+		   AND s.enabled = TRUE
+		   AND (s.expires_at IS NULL OR s.expires_at > NOW())`,
 		strings.TrimSpace(token),
-	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.CreatedAt, &share.UpdatedAt)
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.APIKey,
+		&share.Enabled, &share.ExpiresAt, &share.CreatedAt, &share.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &share, nil
+}
+
+func (s *Store) GetMailboxOTPShareByAPIKey(ctx context.Context, apiKey string) (*model.MailboxOTPShare, error) {
+	var share model.MailboxOTPShare
+	err := s.pool.QueryRow(ctx,
+		`SELECT s.mailbox_id, m.full_address, s.token, COALESCE(s.api_key, ''),
+		        s.enabled, s.expires_at, s.created_at, s.updated_at
+		 FROM mailbox_otp_shares s
+		 JOIN mailboxes m ON m.id = s.mailbox_id
+		 WHERE s.api_key = $1
+		   AND s.enabled = TRUE
+		   AND (s.expires_at IS NULL OR s.expires_at > NOW())`,
+		strings.TrimSpace(apiKey),
+	).Scan(&share.MailboxID, &share.FullAddress, &share.Token, &share.APIKey,
+		&share.Enabled, &share.ExpiresAt, &share.CreatedAt, &share.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,6 +1226,12 @@ func generateMailboxOTPShareToken() string {
 	b := make([]byte, 24)
 	rand.Read(b)
 	return "tms_" + hex.EncodeToString(b)
+}
+
+func generateMailboxOTPShareAPIKey() string {
+	b := make([]byte, 24)
+	rand.Read(b)
+	return "tmsk_" + hex.EncodeToString(b)
 }
 
 func GenerateRandomAddress() string {

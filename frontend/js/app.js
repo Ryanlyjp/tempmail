@@ -34,6 +34,8 @@ const state = {
     share: null,
     address: '',
     token: '',
+    apiKey: '',
+    expiresDays: '0',
   },
 };
 
@@ -316,8 +318,6 @@ const api = {
   hostnames:       () => api.hostnamesPayload().then(d => Array.isArray(d) ? d : (d.hostnames || [])),
   // 域名 → 解包 {domains:[...]} → 数组
   domains:         (params = '') => api.domainsPayload(params).then(d => Array.isArray(d) ? d : (d.domains || [])),
-  // 任意已登录用户提交域名 MX 验证
-  submitDomain:    body => apiFetch(API_BASE + '/domains/submit', { method: 'POST', body: JSON.stringify(body) }),
   // 轮询域名状态（任意已登录用户，不需要管理员权限）
   getDomainStatus: id => apiFetch(API_BASE + '/domains/' + id + '/status'),
   // 邮箱 → 解包 {data:[...]}
@@ -2153,7 +2153,7 @@ async function renderEmailView(container) {
 async function renderDomainsGuide(container) {
   const actions = $('topbar-actions');
   if (actions) {
-    actions.innerHTML = `<button class="btn btn-success btn-sm" onclick="showMXRegisterModal()">⚡ 提交域名自动验证</button>`;
+    actions.innerHTML = '';
   }
 
   const [domains, pub] = await Promise.all([
@@ -2271,15 +2271,10 @@ async function renderDomainsGuide(container) {
             <div class="guide-step">
               <div class="step-num">3</div>
               <div class="step-body">
-                <div class="step-title">提交域名自动验证</div>
+                <div class="step-title">等待管理员启用</div>
                 <div class="step-desc">
-                  DNS 广播后（通常 5–30 分钟），点击右上角「⚡ 提交域名自动验证」按钮。<br>
-                  <ul style="margin:0.4rem 0 0 1rem;font-size:0.82rem">
-                    <li>MX 已生效 → <b>立即激活</b>加入域名池</li>
-                    <li>MX 未生效 → 进入<b>待验证队列</b>，后台每 30 秒自动重试</li>
-                  </ul>
+                  域名提交和 MX 自动验证仅由管理员后台操作。管理员确认配置生效后，域名会出现在左侧可用域名池。
                 </div>
-                <button class="btn btn-success btn-sm" style="margin-top:0.5rem" onclick="showMXRegisterModal()">⚡ 提交域名</button>
               </div>
             </div>
             <div class="guide-step">
@@ -2308,6 +2303,12 @@ function buildAdminOTPShareOptions(mailboxes) {
   }).join('');
 }
 
+function adminOTPShareStatus(share) {
+  if (!share?.enabled) return { text: '已停止', className: 'badge-gray' };
+  if (share?.expired) return { text: '已过期', className: 'badge-red' };
+  return { text: '使用中', className: 'badge-green' };
+}
+
 function buildAdminOTPShareResult() {
   const current = state.adminOTPShare || {};
   const mailbox = current.mailbox;
@@ -2321,53 +2322,66 @@ function buildAdminOTPShareResult() {
     `;
   }
 
-  const tokenBox = share
-    ? `
-      <div class="form-group">
-        <label class="form-label">分享 Token</label>
-        <div class="code-box">
-          <span>${escHtml(share.token || '—')}</span>
-          <button class="copy-btn" onclick="copyText(${JSON.stringify(share.token || '')})" title="复制">⎘</button>
-        </div>
-      </div>
-    `
-    : '';
-
   const shareBoxes = share
-    ? `
-      <div class="form-group">
-        <label class="form-label">长链接</label>
-        <div class="code-box">
-          <span>${escHtml(share.url || '—')}</span>
-          <button class="copy-btn" onclick="copyText(${JSON.stringify(share.url || '')})" title="复制">⎘</button>
+    ? (() => {
+      const status = adminOTPShareStatus(share);
+      return `
+        <div class="otp-share-meta">
+          <span class="badge ${status.className}">${status.text}</span>
+          <span class="otp-share-address">${escHtml(mailbox.full_address || '—')}</span>
+          <span class="otp-share-list-time">${share.expires_at ? `有效至 ${escHtml(formatDate(share.expires_at))}` : '永久有效'}</span>
         </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">接口命令</label>
-        <div class="code-box">
-          <span>${escHtml(share.curl || '—')}</span>
-          <button class="copy-btn" onclick="copyText(${JSON.stringify(share.curl || '')})" title="复制">⎘</button>
+        <div class="form-group">
+          <label class="form-label">页面 Token</label>
+          <div class="code-box">
+            <span>${escHtml(share.token || '—')}</span>
+            <button class="copy-btn" onclick="copyText(${JSON.stringify(share.token || '')})" title="复制">⎘</button>
+          </div>
         </div>
-      </div>
-    `
+        <div class="form-group">
+          <label class="form-label">分享 API Key</label>
+          <div class="code-box">
+            <span>${escHtml(share.api_key || '—')}</span>
+            <button class="copy-btn" onclick="copyText(${JSON.stringify(share.api_key || '')})" title="复制">⎘</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">独立分享页面</label>
+          <div class="code-box">
+            <span>${escHtml(share.url || '—')}</span>
+            <button class="copy-btn" onclick="copyText(${JSON.stringify(share.url || '')})" title="复制">⎘</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">提取最新 OTP</label>
+          <div class="code-box">
+            <span>${escHtml(share.curl || '—')}</span>
+            <button class="copy-btn" onclick="copyText(${JSON.stringify(share.curl || '')})" title="复制">⎘</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">读取最近 5 封邮件</label>
+          <div class="code-box">
+            <span>${escHtml(share.emails_curl || '—')}</span>
+            <button class="copy-btn" onclick="copyText(${JSON.stringify(share.emails_curl || '')})" title="复制">⎘</button>
+          </div>
+        </div>
+      `;
+    })()
     : `
       <div class="otp-share-empty">
-        该邮箱当前还没有分享配置。你可以留空 token 自动生成，或填一个自定义 token 后保存。
+        该邮箱当前还没有分享配置。页面 Token 和 API Key 均可留空自动生成。
       </div>
     `;
 
   return `
     <div class="otp-share-result">
-      <div class="otp-share-meta">
-        <span class="badge badge-gold">${mailbox.is_favorite ? `★ ${escHtml(group?.name || '收藏邮箱')}` : '邮箱已匹配'}</span>
-        <span class="otp-share-address">${escHtml(mailbox.full_address || '—')}</span>
-      </div>
-      ${tokenBox}
+      ${share ? '' : `<div class="otp-share-meta"><span class="badge badge-gold">${mailbox.is_favorite ? `★ ${escHtml(group?.name || '收藏邮箱')}` : '邮箱已匹配'}</span><span class="otp-share-address">${escHtml(mailbox.full_address || '—')}</span></div>`}
       ${shareBoxes}
       <div class="form-hint">
         ${share
           ? `最近更新：${escHtml(formatDate(share.updated_at))}`
-          : '分享链接只会读取该邮箱最新一封邮件里的 OTP，不会暴露账号 API Key。'}
+          : '独立页面和分享 API Key 只允许读取这个邮箱，不会获得账号管理权限。'}
       </div>
     </div>
   `;
@@ -2378,30 +2392,34 @@ function buildAdminOTPShareList() {
   if (shares.length === 0) {
     return `
       <div class="otp-share-list-empty">
-        还没有已启用的邮箱级 OTP 分享。
+        还没有邮箱级 OTP 分享。
       </div>
     `;
   }
 
   return `
     <div class="otp-share-list">
-      ${shares.map(share => `
+      ${shares.map(share => {
+        const status = adminOTPShareStatus(share);
+        return `
         <div class="otp-share-list-item">
           <div class="otp-share-list-main">
-            <div class="otp-share-list-address">${escHtml(share.full_address || '—')}</div>
+            <div class="otp-share-list-address"><span class="badge ${status.className}" style="margin-right:0.35rem">${status.text}</span>${escHtml(share.full_address || '—')}</div>
             <div class="otp-share-list-token">
-              <span>${escHtml(share.token || '—')}</span>
-              <button class="copy-btn" type="button" onclick='copyText(${JSON.stringify(share.token || '')})' title="复制 Token">⎘</button>
+              <span>Key: ${escHtml(share.api_key || '—')}</span>
+              <button class="copy-btn" type="button" onclick='copyText(${JSON.stringify(share.api_key || '')})' title="复制 API Key">⎘</button>
             </div>
-            <div class="otp-share-list-time">更新于 ${escHtml(formatDate(share.updated_at))}</div>
+            <div class="otp-share-list-time">${share.expires_at ? `有效至 ${escHtml(formatDate(share.expires_at))}` : '永久有效'} · 更新于 ${escHtml(formatDate(share.updated_at))}</div>
           </div>
           <div class="otp-share-list-actions">
             <button class="btn btn-ghost btn-sm" type="button" onclick="editAdminOTPShare('${share.mailbox_id}')">编辑</button>
             <button class="btn btn-ghost btn-sm" type="button" onclick='copyText(${JSON.stringify(share.url || '')})'>复制链接</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="toggleAdminOTPShare('${share.mailbox_id}')">${share.enabled ? '停止' : '启用'}</button>
             <button class="btn btn-danger btn-sm" type="button" onclick="confirmRevokeAdminOTPShare('${share.mailbox_id}')">收回</button>
           </div>
         </div>
-      `).join('')}
+        `;
+      }).join('')}
     </div>
   `;
 }
@@ -2475,7 +2493,7 @@ async function renderAdminAccounts(container) {
         <div class="card-header">
           <div>
             <div class="card-title">🔐 邮箱级 OTP 分享</div>
-            <div style="font-size:0.78rem;color:var(--text-muted)">先按收藏夹分组缩小候选范围，再生成或自定义分享 token</div>
+            <div style="font-size:0.78rem;color:var(--text-muted)">独立接码页面、独立 API Key、最近 5 封邮件与有效期管理</div>
           </div>
           <div style="font-size:0.78rem;color:var(--text-muted)">当前候选 ${Number(favoritePage.total) || shareMailboxes.length} 个</div>
         </div>
@@ -2498,14 +2516,34 @@ async function renderAdminAccounts(container) {
             <div class="form-hint">候选仅来自当前分组；仍可手动输入属于当前账号的任意邮箱。</div>
           </div>
           <div class="form-group">
-            <label class="form-label">自定义 Token（可选）</label>
+            <label class="form-label">页面 Token（可选）</label>
             <input class="form-input" id="otp-share-token" placeholder="留空则自动生成" value="${escHtml(state.adminOTPShare.token || '')}" />
             <div class="form-hint">允许 6-64 位字母、数字、下划线或短横线。</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">分享 API Key（可选）</label>
+            <input class="form-input" id="otp-share-api-key" placeholder="留空则自动生成" value="${escHtml(state.adminOTPShare.apiKey || '')}" />
+            <div class="form-hint">允许 16-96 位字母、数字、下划线或短横线；保存后会持续显示在管理后台。</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">有效期</label>
+            <select class="form-input" id="otp-share-expires-days">
+              ${state.adminOTPShare.share ? `<option value="" ${state.adminOTPShare.expiresDays === '' ? 'selected' : ''}>保持当前有效期</option>` : ''}
+              <option value="1" ${state.adminOTPShare.expiresDays === '1' ? 'selected' : ''}>1 天</option>
+              <option value="3" ${state.adminOTPShare.expiresDays === '3' ? 'selected' : ''}>3 天</option>
+              <option value="7" ${state.adminOTPShare.expiresDays === '7' ? 'selected' : ''}>7 天</option>
+              <option value="30" ${state.adminOTPShare.expiresDays === '30' ? 'selected' : ''}>30 天</option>
+              <option value="90" ${state.adminOTPShare.expiresDays === '90' ? 'selected' : ''}>90 天</option>
+              <option value="0" ${state.adminOTPShare.expiresDays === '0' ? 'selected' : ''}>永久有效</option>
+            </select>
           </div>
           <div class="otp-share-actions">
             <button class="btn btn-ghost btn-sm" onclick="loadAdminOTPShare()">读取当前分享</button>
             <button class="btn btn-primary btn-sm" onclick="saveAdminOTPShare()">保存分享</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteAdminOTPShare()">停用分享</button>
+            <button class="btn btn-ghost btn-sm" onclick="regenerateAdminOTPShareToken()">更换链接</button>
+            <button class="btn btn-ghost btn-sm" onclick="rotateAdminOTPShareAPIKey()">更换 API Key</button>
+            <button class="btn btn-ghost btn-sm" onclick="toggleCurrentAdminOTPShare()">${state.adminOTPShare.share?.enabled ? '停止分享' : '启用分享'}</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteAdminOTPShare()">收回分享</button>
           </div>
           <div id="otp-share-result-wrap" style="margin-top:1rem">
             ${buildAdminOTPShareResult()}
@@ -2524,10 +2562,26 @@ async function renderAdminAccounts(container) {
   `;
 }
 
-window.changeAdminOTPShareGroup = function(groupID) {
-  state.adminOTPShare.groupID = String(groupID || '');
+function captureAdminOTPShareForm() {
   state.adminOTPShare.address = String($('otp-share-address')?.value || state.adminOTPShare.address || '').trim();
   state.adminOTPShare.token = String($('otp-share-token')?.value || state.adminOTPShare.token || '').trim();
+  state.adminOTPShare.apiKey = String($('otp-share-api-key')?.value || state.adminOTPShare.apiKey || '').trim();
+  const expiresSelect = $('otp-share-expires-days');
+  if (expiresSelect) state.adminOTPShare.expiresDays = String(expiresSelect.value ?? '');
+}
+
+function clearAdminOTPShareSelection() {
+  state.adminOTPShare.mailbox = null;
+  state.adminOTPShare.share = null;
+  state.adminOTPShare.address = '';
+  state.adminOTPShare.token = '';
+  state.adminOTPShare.apiKey = '';
+  state.adminOTPShare.expiresDays = '0';
+}
+
+window.changeAdminOTPShareGroup = function(groupID) {
+  captureAdminOTPShareForm();
+  state.adminOTPShare.groupID = String(groupID || '');
   navigate('admin-accounts');
 };
 
@@ -2540,6 +2594,8 @@ window.editAdminOTPShare = async function(mailboxID) {
   state.adminOTPShare.share = share;
   state.adminOTPShare.address = share.full_address || '';
   state.adminOTPShare.token = share.token || '';
+  state.adminOTPShare.apiKey = share.api_key || '';
+  state.adminOTPShare.expiresDays = '';
   try {
     state.adminOTPShare.mailbox = await api.lookupMailboxByAddress(share.full_address || '');
   } catch (_) {
@@ -2567,10 +2623,7 @@ window.confirmRevokeAdminOTPShare = function(mailboxID) {
     try {
       await api.deleteMailboxOTPShare(mailboxID);
       if (state.adminOTPShare.mailbox?.id === mailboxID) {
-        state.adminOTPShare.mailbox = null;
-        state.adminOTPShare.share = null;
-        state.adminOTPShare.address = '';
-        state.adminOTPShare.token = '';
+        clearAdminOTPShareSelection();
       }
       toast('OTP 分享已收回', 'success');
       navigate('admin-accounts');
@@ -2583,10 +2636,8 @@ window.confirmRevokeAdminOTPShare = function(mailboxID) {
 };
 
 async function resolveAdminOTPShareMailbox(requireExistingShare = false) {
-  const address = String($('otp-share-address')?.value || '').trim().toLowerCase();
-  const token = String($('otp-share-token')?.value || '').trim();
-  state.adminOTPShare.address = address;
-  state.adminOTPShare.token = token;
+  captureAdminOTPShareForm();
+  const address = state.adminOTPShare.address.toLowerCase();
   if (!address) {
     toast('请输入邮箱地址', 'warn');
     return null;
@@ -2610,28 +2661,76 @@ window.loadAdminOTPShare = async function() {
     const share = await api.getMailboxOTPShare(mailbox.id);
     state.adminOTPShare.share = share;
     state.adminOTPShare.token = share.token || '';
+    state.adminOTPShare.apiKey = share.api_key || '';
+    state.adminOTPShare.expiresDays = '';
     toast('已读取当前分享', 'success');
   } catch (e) {
     state.adminOTPShare.share = null;
+    state.adminOTPShare.apiKey = '';
+    state.adminOTPShare.expiresDays = '0';
     toast(e.message.includes('otp share not found') ? '该邮箱当前没有分享配置' : ('读取失败：' + e.message), e.message.includes('otp share not found') ? 'warn' : 'error');
   }
   navigate('admin-accounts');
 };
 
-window.saveAdminOTPShare = async function() {
-  const mailbox = await resolveAdminOTPShareMailbox(false);
+async function saveAdminOTPShareWith(options = {}) {
+  const mailbox = await resolveAdminOTPShareMailbox(!!options.requireExisting);
   if (!mailbox) return;
   try {
-    const customRequested = !!state.adminOTPShare.token;
+    if (options.requireExisting && !state.adminOTPShare.share) {
+      state.adminOTPShare.share = await api.getMailboxOTPShare(mailbox.id);
+      state.adminOTPShare.token = state.adminOTPShare.share.token || '';
+      state.adminOTPShare.apiKey = state.adminOTPShare.share.api_key || '';
+    }
     const body = {};
-    if (state.adminOTPShare.token) body.token = state.adminOTPShare.token;
+    if (options.regenerateToken) body.regenerate_token = true;
+    else if (state.adminOTPShare.token) body.token = state.adminOTPShare.token;
+    if (options.rotateAPIKey) body.rotate_api_key = true;
+    else if (state.adminOTPShare.apiKey) body.api_key = state.adminOTPShare.apiKey;
+    if (state.adminOTPShare.expiresDays !== '') body.expires_days = Number(state.adminOTPShare.expiresDays) || 0;
+    if (typeof options.enabled === 'boolean') body.enabled = options.enabled;
     const share = await api.upsertMailboxOTPShare(mailbox.id, body);
     state.adminOTPShare.share = share;
     state.adminOTPShare.token = share.token || '';
-    toast(customRequested ? 'OTP 分享已保存' : 'OTP 分享已生成', 'success');
+    state.adminOTPShare.apiKey = share.api_key || '';
+    state.adminOTPShare.expiresDays = '';
+    toast(options.successMessage || 'OTP 分享已保存', 'success');
     navigate('admin-accounts');
   } catch (e) {
     toast('保存失败：' + e.message, 'error');
+  }
+}
+
+window.saveAdminOTPShare = function() {
+  return saveAdminOTPShareWith({ successMessage: state.adminOTPShare.share ? 'OTP 分享已保存' : 'OTP 分享已创建' });
+};
+
+window.regenerateAdminOTPShareToken = function() {
+  return saveAdminOTPShareWith({ requireExisting: true, regenerateToken: true, successMessage: '分享链接已更换' });
+};
+
+window.rotateAdminOTPShareAPIKey = function() {
+  return saveAdminOTPShareWith({ requireExisting: true, rotateAPIKey: true, successMessage: '分享 API Key 已更换' });
+};
+
+window.toggleCurrentAdminOTPShare = function() {
+  if (!state.adminOTPShare.share) {
+    toast('请先读取或创建分享', 'warn');
+    return;
+  }
+  const enabled = !state.adminOTPShare.share.enabled;
+  return saveAdminOTPShareWith({ requireExisting: true, enabled, successMessage: enabled ? 'OTP 分享已启用' : 'OTP 分享已停止' });
+};
+
+window.toggleAdminOTPShare = async function(mailboxID) {
+  const share = (state.adminOTPShare.shares || []).find(item => item.mailbox_id === mailboxID);
+  if (!share) return;
+  try {
+    await api.upsertMailboxOTPShare(mailboxID, { enabled: !share.enabled });
+    toast(share.enabled ? 'OTP 分享已停止' : 'OTP 分享已启用', 'success');
+    navigate('admin-accounts');
+  } catch (e) {
+    toast('操作失败：' + e.message, 'error');
   }
 };
 
@@ -2639,13 +2738,12 @@ window.deleteAdminOTPShare = async function() {
   const mailbox = await resolveAdminOTPShareMailbox(true);
   if (!mailbox) return;
   try {
-    await api.deleteMailboxOTPShare(mailbox.id);
-    state.adminOTPShare.share = null;
-    state.adminOTPShare.token = '';
-    toast('OTP 分享已停用', 'success');
-    navigate('admin-accounts');
+    if (!state.adminOTPShare.share) {
+      state.adminOTPShare.share = await api.getMailboxOTPShare(mailbox.id);
+    }
+    confirmRevokeAdminOTPShare(mailbox.id);
   } catch (e) {
-    toast('停用失败：' + e.message, 'error');
+    toast('读取分享失败：' + e.message, 'error');
   }
 };
 
@@ -3884,7 +3982,10 @@ function startPendingDomainPoller(ids) {
 }
 
 window.showMXRegisterModal = function() {
-  const isAdmin = !!state.account?.is_admin;
+  if (!state.account?.is_admin) {
+    toast('仅管理员可以提交域名自动验证', 'warn');
+    return;
+  }
   const old = document.querySelector('.modal-overlay');
   if (old) old.remove();
   let defaultHostname = '';
@@ -3982,7 +4083,7 @@ window.showMXRegisterModal = function() {
     btn.textContent = '检测中...';
     status.style.display = 'none';
 
-    const domainListPage = state.account?.is_admin ? 'admin-domains' : 'domains-guide';
+    const domainListPage = 'admin-domains';
     try {
       const body = { domain };
       if (hostnameId > 0) body.hostname_id = hostnameId;
@@ -3990,7 +4091,7 @@ window.showMXRegisterModal = function() {
         body.subdomain_enabled = true;
         body.subdomain_random_length = subLength;
       }
-      const r = isAdmin ? await api.admin.mxRegister(body) : await api.submitDomain(body);
+      const r = await api.admin.mxRegister(body);
       if (r.status === 'active') {
         overlay.innerHTML = `
           <div class="modal" style="text-align:center;padding:2rem">
@@ -4045,7 +4146,7 @@ window.showMXRegisterModal = function() {
       attempts++;
       if (!document.body.contains(modal)) { clearInterval(timer); return; }
       try {
-        const d = await api.getDomainStatus(domainId); // 非管理员接口
+        const d = await api.admin.getDomainStatus(domainId);
         if (d.status === 'active') {
           clearInterval(timer);
           if (statusEl) statusEl.innerHTML = `
@@ -4053,7 +4154,7 @@ window.showMXRegisterModal = function() {
               ✅ <b>MX 验证通过！域名 ${escHtml(domainName)} 已自动激活。</b>
             </div>`;
           toast(`✓ ${domainName} 已自动激活`, 'success');
-          setTimeout(() => { modal.remove(); navigate(state.account?.is_admin ? 'admin-domains' : 'domains-guide'); }, 2500);
+          setTimeout(() => { modal.remove(); navigate('admin-domains'); }, 2500);
         } else if (statusEl) {
           const ago = d.mx_checked_at ? timeAgo(d.mx_checked_at) : '从未';
           statusEl.innerHTML = `

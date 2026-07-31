@@ -640,6 +640,130 @@ tr:hover td { background: rgba(184,92,56,0.04); }
   text-align: center;
 }
 
+/* 独立 OTP 分享页 */
+.otp-public-page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(184,92,56,0.16), transparent 34rem),
+    radial-gradient(circle at 90% 85%, rgba(58,125,68,0.12), transparent 30rem),
+    var(--bg);
+}
+.otp-public-shell {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 2rem 1.2rem 3rem;
+}
+.otp-public-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.2rem;
+}
+.otp-public-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+.otp-public-mark {
+  width: 3.5rem;
+  height: 3.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1rem 0.35rem 1rem 0.35rem;
+  color: #fff8ed;
+  background: linear-gradient(145deg, var(--clr-primary), var(--clr-accent));
+  box-shadow: 0 0.7rem 2rem rgba(142,62,34,0.2);
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+.otp-public-kicker {
+  color: var(--clr-primary);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+.otp-public-header h1 { font-size: 1.55rem; line-height: 1.25; }
+.otp-public-address {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+.otp-public-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.35rem 1.5rem;
+  border-left: 4px solid var(--clr-primary);
+  background: linear-gradient(110deg, var(--bg-card), rgba(200,150,62,0.08));
+}
+.otp-public-label {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+.otp-public-code {
+  margin: 0.2rem 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: clamp(1.1rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.otp-public-code.is-ready { color: var(--clr-primary-dark); }
+.otp-public-meta { color: var(--text-muted); font-size: 0.75rem; }
+.otp-public-actions { display: flex; flex-wrap: wrap; gap: 0.55rem; justify-content: flex-end; }
+.otp-public-mail-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.38fr) minmax(0, 0.62fr);
+  gap: 1rem;
+  margin-top: 1rem;
+  align-items: start;
+}
+.otp-public-list-card,
+.otp-public-detail-card { overflow: hidden; }
+.otp-public-mail-list { display: flex; flex-direction: column; }
+.otp-public-mail-item {
+  width: 100%;
+  padding: 0.9rem 1rem;
+  border: 0;
+  border-bottom: 1px solid var(--border-light);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background var(--transition), box-shadow var(--transition);
+}
+.otp-public-mail-item:hover,
+.otp-public-mail-item.active {
+  background: rgba(184,92,56,0.08);
+  box-shadow: inset 3px 0 var(--clr-primary);
+}
+.otp-public-mail-item strong,
+.otp-public-mail-item span,
+.otp-public-mail-item time { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.otp-public-mail-item strong { font-size: 0.86rem; }
+.otp-public-mail-item span { margin-top: 0.2rem; color: var(--text-secondary); font-size: 0.75rem; }
+.otp-public-mail-item time { margin-top: 0.25rem; color: var(--text-muted); font-size: 0.68rem; }
+.otp-public-detail-empty { padding: 3rem 1.2rem; color: var(--text-muted); text-align: center; }
+.otp-public-detail .email-detail-header { display: grid; gap: 0.35rem; }
+.otp-public-detail .email-detail-header .btn { justify-self: start; margin-top: 0.45rem; }
+.otp-public-attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.55rem; }
+.otp-public-frame { min-height: 520px; }
+.otp-public-text-body {
+  min-height: 320px;
+  padding: 1.2rem 1.3rem;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.86rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 邮件列表项 */
 .email-item {
   display: flex;
@@ -1461,6 +1585,13 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 }
 
 @media (max-width: 768px) {
+	.otp-public-shell { padding: 1rem 0.8rem 2rem; }
+	.otp-public-header { align-items: flex-start; flex-direction: column; }
+	.otp-public-hero { align-items: stretch; flex-direction: column; }
+	.otp-public-actions { justify-content: stretch; }
+	.otp-public-actions .btn { flex: 1 1 100%; }
+	.otp-public-mail-grid { grid-template-columns: 1fr; }
+	.otp-public-frame { min-height: 420px; }
   .otp-share-actions .btn {
     flex: 1 1 100%;
   }

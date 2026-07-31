@@ -79,11 +79,14 @@ type FavoriteGroup struct {
 }
 
 type MailboxOTPShare struct {
-	MailboxID   uuid.UUID `json:"mailbox_id"`
-	FullAddress string    `json:"full_address"`
-	Token       string    `json:"token"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	MailboxID   uuid.UUID  `json:"mailbox_id"`
+	FullAddress string     `json:"full_address"`
+	Token       string     `json:"token"`
+	APIKey      string     `json:"api_key"`
+	Enabled     bool       `json:"enabled"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type Email struct {

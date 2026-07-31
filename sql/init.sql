@@ -127,6 +127,19 @@ CREATE TABLE emails (
 -- 按邮箱查邮件（分页查询热路径）
 CREATE INDEX idx_emails_mailbox_received ON emails (mailbox_id, received_at DESC);
 
+CREATE TABLE mailbox_otp_shares (
+    mailbox_id UUID PRIMARY KEY REFERENCES mailboxes(id) ON DELETE CASCADE,
+    token      VARCHAR(96) NOT NULL UNIQUE,
+    api_key    VARCHAR(96) UNIQUE,
+    enabled    BOOLEAN NOT NULL DEFAULT TRUE,
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_mailbox_otp_shares_token ON mailbox_otp_shares (token);
+CREATE UNIQUE INDEX idx_mailbox_otp_shares_api_key
+    ON mailbox_otp_shares (api_key) WHERE api_key IS NOT NULL;
+
 -- ============================================================
 -- 6. 初始管理员账号
 -- ============================================================

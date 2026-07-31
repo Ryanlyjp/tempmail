@@ -404,7 +404,7 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 	c.JSON(http.StatusAccepted, resp)
 }
 
-// POST /api/domains/submit — 任意已登录用户提交域名进行 MX 自动验证
+// POST /api/admin/domains/submit — 管理员提交域名进行 MX 自动验证
 func (h *DomainHandler) Submit(c *gin.Context) {
 	var req struct {
 		Domain                string `json:"domain" binding:"required"`

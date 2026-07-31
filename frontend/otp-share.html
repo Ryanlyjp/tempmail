@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>TempMail 邮箱接码</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css?v=18" />
+</head>
+<body class="otp-public-page">
+  <main class="otp-public-shell">
+    <header class="otp-public-header">
+      <div class="otp-public-brand">
+        <span class="otp-public-mark">邮</span>
+        <div>
+          <p class="otp-public-kicker">TEMPMAIL SHARE</p>
+          <h1>邮箱接码</h1>
+          <p id="share-mailbox" class="otp-public-address">正在读取分享信息...</p>
+        </div>
+      </div>
+      <span id="share-expiry" class="badge badge-gold">校验中</span>
+    </header>
+
+    <section class="otp-public-hero card">
+      <div>
+        <p class="otp-public-label">最新验证码</p>
+        <div id="share-otp-result" class="otp-public-code">点击右侧按钮提取</div>
+        <p id="share-otp-meta" class="otp-public-meta">只读取该邮箱最新一封邮件</p>
+      </div>
+      <div class="otp-public-actions">
+        <button class="btn btn-primary" id="share-otp-btn">提取 OTP</button>
+        <button class="btn btn-ghost" id="share-read-btn">刷新最近 5 封</button>
+      </div>
+    </section>
+
+    <section class="otp-public-mail-grid">
+      <article class="card otp-public-list-card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">最近邮件</div>
+            <div class="otp-public-meta">仅展示最近 5 封</div>
+          </div>
+        </div>
+        <div id="share-mail-list" class="otp-public-mail-list">
+          <div class="otp-share-empty">正在读取邮件...</div>
+        </div>
+      </article>
+
+      <article class="card otp-public-detail-card">
+        <div id="share-mail-detail" class="otp-public-detail-empty">
+          选择左侧邮件查看正文和提取该邮件的 OTP。
+        </div>
+      </article>
+    </section>
+  </main>
+  <div id="toast-container" aria-live="polite"></div>
+  <script src="/js/otp-share.js?v=18"></script>
+</body>
+</html>

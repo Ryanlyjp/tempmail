@@ -90,8 +90,17 @@ func main() {
 		public.GET("/settings", settingH.GetPublic)
 		public.POST("/register", registerH.Register)
 		public.GET("/stats", statsH.Get)
-		public.GET("/otp-share/latest", otpShareH.PublicLatest)
-		public.GET("/otp-share/:token/latest", otpShareH.PublicLatest)
+		public.GET("/otp-share/latest", otpShareH.APIKeyLatest)
+		public.GET("/otp-share/emails", otpShareH.APIKeyEmails)
+		public.GET("/otp-share/emails/:email_id", otpShareH.APIKeyEmail)
+		public.GET("/otp-share/emails/:email_id/otp", otpShareH.APIKeyEmailOTP)
+		public.GET("/otp-share/emails/:email_id/attachments/:attachment_id", otpShareH.APIKeyAttachment)
+		public.GET("/otp-share/page/:token/mailbox", otpShareH.PageMailbox)
+		public.GET("/otp-share/page/:token/latest", otpShareH.PageLatest)
+		public.GET("/otp-share/page/:token/emails", otpShareH.PageEmails)
+		public.GET("/otp-share/page/:token/emails/:email_id", otpShareH.PageEmail)
+		public.GET("/otp-share/page/:token/emails/:email_id/otp", otpShareH.PageEmailOTP)
+		public.GET("/otp-share/page/:token/emails/:email_id/attachments/:attachment_id", otpShareH.PageAttachment)
 	}
 
 	// API 路由组（需要认证 + 速率限制）
@@ -107,9 +116,6 @@ func main() {
 		api.GET("/hostnames", hostnameH.List)
 		api.GET("/domains/:id/status", domainH.GetStatus) // 任意用户可轮询域名状态
 		api.GET("/stats", statsH.Get)
-		// 任意已登录用户可提交域名进行 MX 自动验证
-		api.POST("/domains/submit", domainH.Submit)
-
 		// 邮箱管理
 		api.POST("/mailboxes", mailboxH.Create)
 		api.GET("/mailboxes", mailboxH.List)
@@ -144,6 +150,7 @@ func main() {
 		admin := api.Group("/admin")
 		admin.Use(middleware.AdminOnly())
 		{
+			admin.POST("/domains/submit", domainH.Submit)
 			admin.POST("/accounts", accountH.Create)
 			admin.GET("/accounts", accountH.List)
 			admin.DELETE("/accounts/:id", accountH.Delete)
