@@ -3507,13 +3507,27 @@ window.showCFCreateModal = function() {
 };
 
 // ─── Admin: 系统设置 ─────────────────────────────────────────
+function buildTgmagWebhookDomainItem(domain, includeSubdomains) {
+  return `
+    <div class="tgmag-webhook-domain-item" data-domain="${escHtml(domain)}">
+      <div class="tgmag-webhook-domain-name">${escHtml(domain)}</div>
+      <label class="tgmag-webhook-subdomain-option">
+        <input type="checkbox" class="tgmag-webhook-subdomains" ${includeSubdomains ? 'checked' : ''}>
+        包含子域名
+      </label>
+      <button type="button" class="tgmag-webhook-remove" onclick="removeTgmagWebhookDomain(this)" title="移除域名" aria-label="移除 ${escHtml(domain)}">×</button>
+    </div>`;
+}
+
 async function renderAdminSettings(container) {
   let settings = {};
   let hostnameItems = [];
+  let domainItems = [];
   try {
-    [settings, hostnameItems] = await Promise.all([
+    [settings, hostnameItems, domainItems] = await Promise.all([
       api.admin.getSettings().catch(() => ({})),
       api.admin.listHostnames().catch(() => []),
+      api.domains().catch(() => []),
     ]);
   } catch {}
 
@@ -3539,6 +3553,24 @@ async function renderAdminSettings(container) {
   const tgChatId = settings.tg_chat_id || '';
   const tgThreadId = settings.tg_message_thread_id || '';
   const tgForwardMode = settings.tg_forward_mode || 'all_with_attachments';
+  const tgmagWebhookEnabled = settings.tgmag_webhook_enabled === 'true' || settings.tgmag_webhook_enabled === true;
+  const tgmagWebhookUrl = settings.tgmag_webhook_url || '';
+  const tgmagWebhookSecret = settings.tgmag_webhook_secret || '';
+  let tgmagWebhookRules = [];
+  try {
+    const parsedRules = JSON.parse(settings.tgmag_webhook_domains || '[]');
+    if (Array.isArray(parsedRules)) tgmagWebhookRules = parsedRules;
+  } catch {}
+  const webhookRuleMap = new Map(tgmagWebhookRules.map(rule => [String(rule.domain || '').toLowerCase(), !!rule.include_subdomains]));
+  const webhookDomains = [...new Set(domainItems.map(item => String(item.domain || '').toLowerCase()).filter(Boolean))];
+  const selectedWebhookDomains = webhookDomains.filter(domain => webhookRuleMap.has(domain));
+  const webhookDomainOptions = webhookDomains
+    .filter(domain => !webhookRuleMap.has(domain))
+    .map(domain => `<option value="${escHtml(domain)}">${escHtml(domain)}</option>`)
+    .join('');
+  const webhookDomainItems = selectedWebhookDomains
+    .map(domain => buildTgmagWebhookDomainItem(domain, webhookRuleMap.get(domain)))
+    .join('');
   const hostnameRows = hostnames.length === 0
     ? `<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">还没有录入任何 Hostname</td></tr>`
     : hostnames.map(item => `
@@ -3709,6 +3741,33 @@ async function renderAdminSettings(container) {
         <div class="divider"></div>
 
         <div class="form-group">
+          <label class="form-label">tgmag Webhook</label>
+          <div class="toggle-wrap" style="margin-bottom:0.75rem">
+            <label class="toggle">
+              <input type="checkbox" id="toggle-tgmag-webhook" ${tgmagWebhookEnabled ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+            <div class="toggle-label">启用持久化 Webhook</div>
+          </div>
+          <label class="form-label">接收地址</label>
+          <input class="form-input" id="input-tgmag-webhook-url" value="${escHtml(tgmagWebhookUrl)}" placeholder="http://127.0.0.1:8080/webhooks/selfhosted-tempmail" />
+          <label class="form-label" style="margin-top:0.75rem">签名密钥</label>
+          <input class="form-input" id="input-tgmag-webhook-secret" type="password" value="${escHtml(tgmagWebhookSecret)}" autocomplete="new-password" />
+          <label class="form-label" style="margin-top:0.75rem">参与域名</label>
+          <div class="tgmag-webhook-domain-picker">
+            <select class="form-input" id="input-tgmag-webhook-domain">
+              <option value="">选择已有域名</option>
+              ${webhookDomainOptions}
+            </select>
+            <button type="button" class="btn btn-primary btn-sm" onclick="addTgmagWebhookDomain()">+ 添加</button>
+          </div>
+          <div id="tgmag-webhook-domain-list" class="tgmag-webhook-domain-grid">${webhookDomainItems}</div>
+          <div id="tgmag-webhook-domain-empty" class="form-hint tgmag-webhook-domain-empty" ${selectedWebhookDomains.length ? 'hidden' : ''}>尚未添加参与 Webhook 的域名</div>
+          <button class="btn btn-primary btn-sm" onclick="saveTgmagWebhookSettings()" style="margin-top:0.75rem">✓ 保存 Webhook 设置</button>
+        </div>
+        <div class="divider"></div>
+
+        <div class="form-group">
           <label class="form-label">Telegram Bot Token</label>
           <div style="display:flex;gap:0.5rem">
             <input class="form-input" id="input-tg-bot-token" type="password" value="${escHtml(tgBotToken)}" placeholder="123456:ABC..." style="flex:1" />
@@ -3817,6 +3876,61 @@ window.saveSegmentedOTPSettings = async function() {
   } catch (error) {
     toast('保存失败：' + error.message, 'error');
   }
+};
+
+window.saveTgmagWebhookSettings = async function() {
+  const domains = [...document.querySelectorAll('.tgmag-webhook-domain-item')].map(item => {
+    const domain = item.dataset.domain || '';
+    const include = item.querySelector('.tgmag-webhook-subdomains');
+    return { domain, include_subdomains: !!include?.checked };
+  });
+  try {
+    await api.admin.saveSettings({
+      tgmag_webhook_enabled: $('toggle-tgmag-webhook')?.checked ? 'true' : 'false',
+      tgmag_webhook_url: String($('input-tgmag-webhook-url')?.value || '').trim(),
+      tgmag_webhook_secret: String($('input-tgmag-webhook-secret')?.value || '').trim(),
+      tgmag_webhook_domains: JSON.stringify(domains),
+    });
+    toast('Webhook 设置已保存', 'success');
+    navigate('admin-settings');
+  } catch (error) {
+    toast('保存失败：' + error.message, 'error');
+  }
+};
+
+function updateTgmagWebhookDomainEmptyState() {
+  const list = $('tgmag-webhook-domain-list');
+  const empty = $('tgmag-webhook-domain-empty');
+  if (empty) empty.hidden = !!list?.children.length;
+}
+
+window.addTgmagWebhookDomain = function() {
+  const select = $('input-tgmag-webhook-domain');
+  const domain = String(select?.value || '').trim().toLowerCase();
+  if (!domain) {
+    toast('请先选择域名', 'warn');
+    return;
+  }
+  const list = $('tgmag-webhook-domain-list');
+  if (!list) return;
+  list.insertAdjacentHTML('beforeend', buildTgmagWebhookDomainItem(domain, false));
+  select.querySelector(`option[value="${CSS.escape(domain)}"]`)?.remove();
+  select.value = '';
+  updateTgmagWebhookDomainEmptyState();
+};
+
+window.removeTgmagWebhookDomain = function(button) {
+  const item = button.closest('.tgmag-webhook-domain-item');
+  const domain = String(item?.dataset.domain || '');
+  if (!item || !domain) return;
+  item.remove();
+
+  const select = $('input-tgmag-webhook-domain');
+  if (select) {
+    const domains = [...select.options].slice(1).map(option => option.value).concat(domain).sort();
+    select.replaceChildren(new Option('选择已有域名', ''), ...domains.map(value => new Option(value, value)));
+  }
+  updateTgmagWebhookDomainEmptyState();
 };
 
 // 兼容旧调用

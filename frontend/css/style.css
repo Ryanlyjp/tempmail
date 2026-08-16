@@ -1509,6 +1509,64 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 .toggle input:checked + .toggle-slider { background: var(--clr-jade); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
 
+.tgmag-webhook-domain-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.tgmag-webhook-domain-picker .form-input { flex: 1; }
+.tgmag-webhook-domain-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+.tgmag-webhook-domain-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 44px;
+  padding: 0.45rem 0.5rem 0.45rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+.tgmag-webhook-domain-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.tgmag-webhook-subdomain-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.tgmag-webhook-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.tgmag-webhook-remove:hover {
+  background: rgba(220, 53, 69, 0.1);
+  color: var(--clr-danger);
+}
+.tgmag-webhook-domain-empty { margin-top: 0.65rem; }
+
 /* API key display */
 .apikey-hero {
   text-align: center;
@@ -1584,6 +1642,7 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 }
 
 @media (max-width: 768px) {
+	.tgmag-webhook-domain-grid { grid-template-columns: 1fr; }
 	.otp-public-shell { padding: 1rem 0.8rem 2rem; }
 	.otp-public-header { align-items: flex-start; flex-direction: column; }
 	.otp-public-hero { align-items: stretch; flex-direction: column; }
@@ -1828,6 +1887,13 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 }
 
 @media (max-width: 480px) {
+  .tgmag-webhook-domain-picker { align-items: stretch; flex-direction: column; }
+  .tgmag-webhook-domain-picker .btn { width: 100%; }
+  .tgmag-webhook-domain-item {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+  .tgmag-webhook-subdomain-option { grid-column: 1; grid-row: 2; }
+  .tgmag-webhook-remove { grid-column: 2; grid-row: 1 / span 2; }
   .dashboard-stats-strip .strip-item { flex-basis: 100%; }
   .mailbox-actions .btn-sm { flex-basis: 100%; }
   .attachment-item {

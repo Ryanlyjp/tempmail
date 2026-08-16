@@ -127,6 +127,18 @@ CREATE TABLE emails (
 -- 按邮箱查邮件（分页查询热路径）
 CREATE INDEX idx_emails_mailbox_received ON emails (mailbox_id, received_at DESC);
 
+-- Webhook 待投递内容不引用短期邮箱和邮件，避免邮箱过期级联删除后丢失投递。
+CREATE TABLE webhook_outbox (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email_id        UUID        NOT NULL UNIQUE,
+    payload         JSONB       NOT NULL,
+    attempts        INT         NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error      TEXT        NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_webhook_outbox_due ON webhook_outbox (next_attempt_at, created_at);
+
 CREATE TABLE mailbox_otp_shares (
     mailbox_id UUID PRIMARY KEY REFERENCES mailboxes(id) ON DELETE CASCADE,
     token      VARCHAR(96) NOT NULL UNIQUE, -- compatibility mirror of api_key
@@ -178,6 +190,10 @@ INSERT INTO app_settings (key, value) VALUES ('tg_bot_token', '') ON CONFLICT DO
 INSERT INTO app_settings (key, value) VALUES ('tg_chat_id', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('tg_message_thread_id', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('tg_forward_mode', 'all_with_attachments') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_enabled', 'false') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_url', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_secret', '') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_domains', '[]') ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- 9. 数据库性能参数（在 postgresql.conf 或 docker 环境变量中设置更佳）

@@ -17,6 +17,7 @@ import (
 	"tempmail/handler"
 	"tempmail/middleware"
 	"tempmail/store"
+	"tempmail/webhook"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -28,7 +29,8 @@ func main() {
 	cfg := config.Load()
 
 	// ==================== 连接数据库 ====================
-	ctx := context.Background()
+	ctx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
 	db, err := store.New(ctx, cfg.DBDSN)
 	if err != nil {
 		log.Fatalf("failed to connect database: %v", err)
@@ -290,9 +292,14 @@ func main() {
 				mailbox = newMailbox
 			}
 
-			// 存储邮件
-			email, err := db.InsertEmail(ctx,
-				mailbox.ID, req.Sender, req.Subject, req.BodyText, req.BodyHTML, req.Raw)
+			// 邮件与 Webhook outbox 同事务入库，邮箱过期不会丢失待投递内容。
+			webhookConfig, configErr := webhook.Load(ctx, db)
+			if configErr != nil {
+				log.Printf("[webhook] invalid configuration; storing email without webhook: %v", configErr)
+			}
+			email, err := db.InsertEmailWithWebhook(ctx,
+				mailbox.ID, recipient, req.Sender, req.Subject, req.BodyText, req.BodyHTML, req.Raw,
+				configErr == nil && webhookConfig.Matches(recipient))
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -303,6 +310,10 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"status": "delivered", "email_id": email.ID})
 		})
 	}
+
+	// ==================== tgmag Webhook 持久化投递 ====================
+	go webhook.NewWorker(db).Run(ctx, log.Printf)
+	log.Println("✓ tgmag webhook outbox worker started")
 
 	// ==================== 邮箱自动过期清理 ====================
 	go func() {
@@ -436,6 +447,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
+	cancelWorkers()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -211,6 +211,17 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			WHERE token IS DISTINCT FROM api_key`,
 		`ALTER TABLE mailbox_otp_shares
 			ALTER COLUMN api_key SET NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS webhook_outbox (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			email_id UUID NOT NULL UNIQUE,
+			payload JSONB NOT NULL,
+			attempts INT NOT NULL DEFAULT 0,
+			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_outbox_due
+			ON webhook_outbox (next_attempt_at, created_at)`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '')
@@ -256,6 +267,14 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 		`INSERT INTO app_settings (key, value) VALUES ('tg_message_thread_id', '')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO app_settings (key, value) VALUES ('tg_forward_mode', 'all_with_attachments')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_enabled', 'false')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_url', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_secret', '')
+			ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO app_settings (key, value) VALUES ('tgmag_webhook_domains', '[]')
 			ON CONFLICT (key) DO NOTHING`,
 		`INSERT INTO hostnames (hostname)
 		 SELECT LOWER(TRIM(value))

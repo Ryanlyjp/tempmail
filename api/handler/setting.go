@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -12,6 +13,7 @@ import (
 	"tempmail/middleware"
 	"tempmail/store"
 	"tempmail/telegrambot"
+	"tempmail/webhook"
 
 	"github.com/gin-gonic/gin"
 )
@@ -95,6 +97,10 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"tg_chat_id":              true,
 		"tg_message_thread_id":    true,
 		"tg_forward_mode":         true,
+		"tgmag_webhook_enabled":   true,
+		"tgmag_webhook_url":       true,
+		"tgmag_webhook_secret":    true,
+		"tgmag_webhook_domains":   true,
 	}
 
 	normalizedReq := make(map[string]string, len(req))
@@ -166,7 +172,62 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		if k == "smtp_hostname" {
 			v = strings.ToLower(strings.TrimSpace(v))
 		}
+		if k == webhook.EnabledSetting {
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v != "true" && v != "false" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "tgmag_webhook_enabled must be true or false"})
+				return
+			}
+		}
 		normalizedReq[k] = v
+	}
+
+	allSettings, err := h.store.GetAllSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for key, value := range normalizedReq {
+		allSettings[key] = value
+	}
+	rules, err := webhook.ParseRules(allSettings[webhook.DomainsSetting])
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	domains, err := h.store.ListDomains(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	hosted := make(map[string]bool, len(domains))
+	for _, domain := range domains {
+		hosted[strings.ToLower(domain.Domain)] = true
+	}
+	for _, rule := range rules {
+		if !hosted[rule.Domain] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "webhook domain is not hosted: " + rule.Domain})
+			return
+		}
+	}
+	webhookConfig, err := webhook.Validate(
+		strings.EqualFold(allSettings[webhook.EnabledSetting], "true"),
+		allSettings[webhook.URLSetting], allSettings[webhook.SecretSetting], rules,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, present := normalizedReq[webhook.DomainsSetting]; present {
+		if encodedRules, marshalErr := json.Marshal(webhookConfig.Rules); marshalErr == nil {
+			normalizedReq[webhook.DomainsSetting] = string(encodedRules)
+		}
+	}
+	if _, present := normalizedReq[webhook.URLSetting]; present {
+		normalizedReq[webhook.URLSetting] = webhookConfig.URL
+	}
+	if _, present := normalizedReq[webhook.SecretSetting]; present {
+		normalizedReq[webhook.SecretSetting] = webhookConfig.Secret
 	}
 
 	for k, v := range normalizedReq {
