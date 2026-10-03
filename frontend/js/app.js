@@ -498,7 +498,7 @@ function navigate(page, params = {}) {
   renderPage(page);
   // 更新侧导航高亮
   document.querySelectorAll('.nav-item').forEach(n => {
-    n.classList.toggle('active', n.dataset.page === page);
+    n.classList.toggle('active', n.dataset.page === (page === 'admin-external-shares' ? 'admin-external' : page));
   });
 }
 
@@ -663,6 +663,9 @@ function buildMainLayout() {
         <button class="nav-item" data-page="admin-domains" onclick="navigate('admin-domains')">
           <span class="nav-icon">🌐</span><span>域名管理</span>
         </button>
+        <button class="nav-item" data-page="admin-external" onclick="navigate('admin-external')">
+          <span class="nav-icon">✉</span><span>外部邮箱</span>
+        </button>
         <button class="nav-item" data-page="admin-settings" onclick="navigate('admin-settings')">
           <span class="nav-icon">⚙</span><span>系统设置</span>
         </button>
@@ -740,6 +743,8 @@ async function renderPage(page) {
     'domains-guide':  ['域名列表 & 添加指南', '查看可用域名并了解如何添加新域名'],
     'admin-accounts': ['账户管理', '创建和管理用户账户'],
     'admin-domains':  ['域名管理', '管理域名池'],
+    'admin-external': ['外部邮箱', '接收外部邮件、子邮箱隔离与 OTP 工作流'],
+    'admin-external-shares': ['外部邮箱分享管理', '查看和管理子邮箱的分享与 OTP API'],
     'admin-settings': ['系统设置', ''],
     'apikey-show':    ['API Key', ''],
     'api-docs':       ['API 接口文档', '查看所有可用 API 及调用示例'],
@@ -757,6 +762,8 @@ async function renderPage(page) {
       case 'domains-guide':  await renderDomainsGuide(container); break;
       case 'admin-accounts': await renderAdminAccounts(container); break;
       case 'admin-domains':  await renderAdminDomains(container); break;
+      case 'admin-external': await renderExternalMail(container); break;
+      case 'admin-external-shares': await renderExternalShares(container); break;
       case 'admin-settings': await renderAdminSettings(container); break;
       case 'apikey-show':    renderApiKeyShow(container); break;
       case 'api-docs':       renderApiDocs(container); break;
@@ -2542,7 +2549,7 @@ async function renderAdminAccounts(container) {
           <div class="form-group">
             <label class="form-label">分享 API Key（可选）</label>
             <input class="form-input" id="otp-share-api-key" placeholder="留空则自动生成" value="${escHtml(state.adminOTPShare.apiKey || '')}" />
-            <div class="form-hint">同时用于分享页面和接口；允许 16-96 位字母、数字、下划线或短横线。</div>
+            <div class="form-hint">同时用于分享页面和接口；允许 16-256 位字母、数字、下划线、短横线、点或加号。自动生成时包含邮箱名称。</div>
           </div>
           <div class="form-group">
             <label class="form-label">有效期</label>

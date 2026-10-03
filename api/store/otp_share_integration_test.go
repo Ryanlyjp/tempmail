@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,5 +124,17 @@ func TestMailboxOTPShareIsolationAndState(t *testing.T) {
 	}
 	if _, err := s.GetMailboxOTPShareByAPIKey(ctx, shareA.APIKey); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("expired share remained accessible: %v", err)
+	}
+	generated, err := s.UpsertMailboxOTPShare(ctx, mailboxA, accountID, "", true, nil)
+	if err != nil || !strings.HasPrefix(generated.APIKey, "first_") {
+		t.Fatalf("generated key does not include mailbox name: %v", err)
+	}
+	longName := strings.Repeat("a", 64)
+	if _, err := s.pool.Exec(ctx, `UPDATE mailboxes SET address=$2,full_address=$3 WHERE id=$1`, mailboxB, longName, longName+"@"+domain); err != nil {
+		t.Fatal(err)
+	}
+	longShare, err := s.UpsertMailboxOTPShare(ctx, mailboxB, accountID, "", true, nil)
+	if err != nil || !strings.HasPrefix(longShare.APIKey, longName+"_") {
+		t.Fatalf("long mailbox name key failed: %v", err)
 	}
 }

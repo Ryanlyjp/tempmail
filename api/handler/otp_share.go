@@ -24,7 +24,7 @@ type OTPShareHandler struct {
 }
 
 var (
-	otpShareAPIKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{15,95}$`)
+	otpShareAPIKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.+-]{15,255}$`)
 )
 
 func NewOTPShareHandler(s *store.Store) *OTPShareHandler {
@@ -444,7 +444,7 @@ func normalizeOTPShareAPIKey(raw string) (string, error) {
 		return "", nil
 	}
 	if !otpShareAPIKeyPattern.MatchString(apiKey) {
-		return "", fmt.Errorf("invalid api key: use 16-96 chars of letters, numbers, _ or -")
+		return "", fmt.Errorf("invalid api key: use 16-256 chars of letters, numbers, _, -, . or +")
 	}
 	return apiKey, nil
 }

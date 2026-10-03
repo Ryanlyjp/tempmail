@@ -20,6 +20,9 @@ func TestNormalizeOTPShareAPIKey(t *testing.T) {
 	if _, err := normalizeOTPShareAPIKey("too-short"); err == nil {
 		t.Fatal("expected short api key to be rejected")
 	}
+	if _, err := normalizeOTPShareAPIKey("alice.test+tag_12345678901234567890"); err != nil {
+		t.Fatalf("mailbox-named key rejected: %v", err)
+	}
 	if _, err := normalizeOTPShareAPIKey("invalid key with spaces"); err == nil {
 		t.Fatal("expected api key with spaces to be rejected")
 	}

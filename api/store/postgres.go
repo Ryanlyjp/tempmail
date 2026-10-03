@@ -199,6 +199,9 @@ func (s *Store) ensureSchemaCompat(ctx context.Context) error {
 			ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE`,
 		`ALTER TABLE mailbox_otp_shares
 			ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
+		`ALTER TABLE mailbox_otp_shares
+			ALTER COLUMN token TYPE VARCHAR(256),
+			ALTER COLUMN api_key TYPE VARCHAR(256)`,
 		`CREATE INDEX IF NOT EXISTS idx_mailbox_otp_shares_token
 			ON mailbox_otp_shares (token)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_otp_shares_api_key
@@ -991,7 +994,12 @@ func (s *Store) ListMailboxOTPShares(ctx context.Context, accountID uuid.UUID) (
 func (s *Store) UpsertMailboxOTPShare(ctx context.Context, mailboxID, accountID uuid.UUID, apiKey string, enabled bool, expiresAt *time.Time) (*model.MailboxOTPShare, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
-		apiKey = generateMailboxOTPShareAPIKey()
+		mailbox, err := s.GetMailbox(ctx, mailboxID, accountID)
+		if err != nil {
+			return nil, err
+		}
+		localPart, _, _ := strings.Cut(mailbox.FullAddress, "@")
+		apiKey = localPart + "_" + strings.TrimPrefix(generateMailboxOTPShareAPIKey(), "tmsk_")
 	}
 
 	var existingMailboxID uuid.UUID

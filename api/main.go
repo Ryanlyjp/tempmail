@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tempmail/config"
+	"tempmail/external"
 	"tempmail/handler"
 	"tempmail/middleware"
 	"tempmail/store"
@@ -86,6 +87,18 @@ func main() {
 	registerH := handler.NewRegisterHandler(db)
 	statsH := handler.NewStatsHandler(db)
 
+	externalKeyFile := os.Getenv("EXTERNAL_MAIL_KEY_FILE")
+	if externalKeyFile == "" {
+		externalKeyFile = "/data/external-mail.key"
+	}
+	externalMail, externalErr := external.New(ctx, cfg.DBDSN, externalKeyFile, db)
+	if externalErr != nil {
+		log.Printf("[external] initialization failed; existing mail services remain available: %v", externalErr)
+	} else {
+		defer externalMail.Close()
+		go externalMail.Run(ctx)
+	}
+
 	// 公开路由（无需认证）
 	public := r.Group("/public")
 	{
@@ -151,6 +164,9 @@ func main() {
 		// 管理员路由
 		admin := api.Group("/admin")
 		admin.Use(middleware.AdminOnly())
+		if externalMail != nil {
+			externalMail.Register(admin, public)
+		}
 		{
 			admin.POST("/domains/submit", domainH.Submit)
 			admin.POST("/accounts", accountH.Create)

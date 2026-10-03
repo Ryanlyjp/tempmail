@@ -1,7 +1,8 @@
 'use strict';
 
 const shareAPIKey = location.pathname.split('/').filter(Boolean).pop() || '';
-const shareBase = `/public/otp-share/page/${encodeURIComponent(shareAPIKey)}`;
+const shareNamespace = location.pathname.startsWith('/external-otp-share/') ? 'external-otp' : 'otp-share';
+const shareBase = `/public/${shareNamespace}/page/${encodeURIComponent(decodeURIComponent(shareAPIKey))}`;
 const $share = id => document.getElementById(id);
 
 function shareEscape(value) {
