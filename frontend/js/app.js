@@ -426,6 +426,17 @@ const api = {
   // 管理
   admin: {
     listAccounts:  (page=1,size=50) => apiFetch(API_BASE + '/admin/accounts?page='+page+'&size='+size).then(d => Array.isArray(d) ? d : (d.data || [])),
+    listAllAccounts: async () => {
+      const size = 100;
+      const accounts = [];
+      for (let page = 1; ; page++) {
+        const payload = await apiFetch(API_BASE + '/admin/accounts?page='+page+'&size='+size);
+        const items = Array.isArray(payload) ? payload : (payload.data || []);
+        accounts.push(...items);
+        if (items.length < size || accounts.length >= Number(payload.total || accounts.length)) break;
+      }
+      return accounts;
+    },
     createAccount: body => apiFetch(API_BASE + '/admin/accounts', { method: 'POST', body: JSON.stringify(body) }),
     deleteAccount: id   => apiFetch(API_BASE + '/admin/accounts/' + id, { method: 'DELETE' }),
     addDomain:   body => apiFetch(API_BASE + '/admin/domains', { method: 'POST', body: JSON.stringify(body) }),
@@ -3530,11 +3541,13 @@ async function renderAdminSettings(container) {
   let settings = {};
   let hostnameItems = [];
   let domainItems = [];
+  let accountItems = [];
   try {
-    [settings, hostnameItems, domainItems] = await Promise.all([
+    [settings, hostnameItems, domainItems, accountItems] = await Promise.all([
       api.admin.getSettings().catch(() => ({})),
       api.admin.listHostnames().catch(() => []),
       api.domains().catch(() => []),
+      api.admin.listAllAccounts().catch(() => []),
     ]);
   } catch {}
 
@@ -3553,6 +3566,14 @@ async function renderAdminSettings(container) {
   const apiTtlMins = settings.api_mailbox_ttl_minutes || '';
   const catchallEnabled = settings.catchall_enabled === 'true' || settings.catchall_enabled === true;
   const catchallAccountId = settings.catchall_account_id || '';
+  const catchallAccounts = accountItems.filter(account => account && account.is_active !== false);
+  const catchallAccountOptions = [
+    '<option value="">请选择归属账户</option>',
+    ...catchallAccounts.map(account => {
+      const role = account.is_admin ? '管理员' : '普通用户';
+      return `<option value="${escHtml(account.id)}" ${account.id === catchallAccountId ? 'selected' : ''}>${escHtml(account.username)}（${role}）</option>`;
+    }),
+  ].join('');
   const cfApiToken = settings.cf_api_token || '';
   const announce   = settings.announcement          || '';
   const maxMb      = settings.max_mailboxes_per_user|| '5';
@@ -3734,7 +3755,16 @@ async function renderAdminSettings(container) {
             <span class="toggle-desc">收到未知地址邮件时自动创建邮箱并落到指定账号名下</span>
           </div>
         </div>
-        ${inputRow('input-catchall-account-id', 'Catch-all 归属账号 ID', catchallAccountId, '留空则自动归属首个管理员账号', '留空使用首个管理员')}
+        <div class="form-group">
+          <label class="form-label">Catch-all 归属账户</label>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+            <select class="form-input" id="input-catchall-account-id" style="flex:1;min-width:220px">
+              ${catchallAccountOptions}
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="saveCatchAllSetting($('toggle-catchall').checked)">✓ 保存</button>
+          </div>
+          <div class="form-hint">未知地址来信会自动创建邮箱，并归属到这里选择的账户。</div>
+        </div>
         <div class="divider"></div>
 
         <div class="form-group">
@@ -4015,9 +4045,19 @@ window.saveRegistrationSetting = async function(enabled) {
 };
 
 window.saveCatchAllSetting = async function(enabled) {
+  const accountID = String($('input-catchall-account-id')?.value || '').trim();
+  if (enabled && !accountID) {
+    toast('开启 Catch-all 前请选择归属账户', 'warn');
+    const cb = $('toggle-catchall');
+    if (cb) cb.checked = false;
+    return;
+  }
   try {
-    await api.admin.saveSettings({ catchall_enabled: enabled ? 'true' : 'false' });
-    toast(`Catch-all 已${enabled ? '开启' : '关闭'}`, 'success');
+    await api.admin.saveSettings({
+      catchall_enabled: enabled ? 'true' : 'false',
+      catchall_account_id: accountID,
+    });
+    toast(enabled ? 'Catch-all 已开启并保存归属账户' : 'Catch-all 已关闭', 'success');
   } catch(e) {
     toast('保存失败: ' + e.message, 'error');
     const cb = $('toggle-catchall');

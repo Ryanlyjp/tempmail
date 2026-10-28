@@ -364,6 +364,15 @@ func (s *Store) ListAccounts(ctx context.Context, page, size int) ([]model.Accou
 	return accounts, total, nil
 }
 
+func (s *Store) ActiveAccountExists(ctx context.Context, accountID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1 AND is_active = TRUE)`,
+		accountID,
+	).Scan(&exists)
+	return exists, err
+}
+
 // GetAdminAPIKey 获取第一个管理员账号的 API Key（用于写入 admin.key 文件）
 func (s *Store) GetAdminAPIKey(ctx context.Context) (string, error) {
 	var apiKey string
@@ -821,19 +830,23 @@ func (s *Store) SetMailboxTGForward(ctx context.Context, mailboxID uuid.UUID, ac
 }
 
 // GetCatchAllAccountID 获取 catch-all 邮箱的归属账号：
-// 优先读 catchall_account_id 设置；为空时回退首个 admin。
+// 优先读 catchall_account_id 设置；仅旧配置为空时回退首个 admin。
 func (s *Store) GetCatchAllAccountID(ctx context.Context) (uuid.UUID, error) {
 	configured, _ := s.GetSetting(ctx, "catchall_account_id")
+	configured = strings.TrimSpace(configured)
 	if configured != "" {
-		if id, err := uuid.Parse(configured); err == nil {
-			// 验证账号确实存在且活跃
-			var ok bool
-			if err := s.pool.QueryRow(ctx,
-				`SELECT TRUE FROM accounts WHERE id = $1 AND is_active = TRUE`, id,
-			).Scan(&ok); err == nil {
-				return id, nil
-			}
+		id, err := uuid.Parse(configured)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("invalid catch-all account id: %w", err)
 		}
+		exists, err := s.ActiveAccountExists(ctx, id)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if !exists {
+			return uuid.Nil, fmt.Errorf("catch-all account is missing or inactive")
+		}
+		return id, nil
 	}
 	var id uuid.UUID
 	err := s.pool.QueryRow(ctx,

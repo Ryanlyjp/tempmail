@@ -114,7 +114,7 @@ http://<服务器IP>
 当 `catchall_enabled=true` 时，发往已托管域名但未预创建地址的邮件会：
 
 1. 校验域名已在系统中且为激活状态
-2. 归属给 `catchall_account_id` 或第一个管理员账号
+2. 归属给系统设置中下拉选择的已有账户（`catchall_account_id`）
 3. 自动创建邮箱
 4. 按正常流程继续收信
 
@@ -123,6 +123,8 @@ http://<服务器IP>
 - `catchall_enabled`
 - `catchall_account_id`
 - `mailbox_ttl_minutes`
+
+开启 Catch-all 时必须选择一个当前启用的账户。未知地址首次来信会自动创建对应邮箱，后续邮件继续投递到该邮箱；已存在邮箱的归属和投递流程不受影响。
 
 ---
 

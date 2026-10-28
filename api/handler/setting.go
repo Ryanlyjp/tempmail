@@ -124,6 +124,16 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 				return
 			}
 		}
+		if k == "catchall_enabled" {
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v != "true" && v != "false" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "catchall_enabled must be true or false"})
+				return
+			}
+		}
+		if k == "catchall_account_id" {
+			v = strings.TrimSpace(v)
+		}
 		if k == "otp_segmented_lengths" {
 			seen := map[string]bool{}
 			var normalized []string
@@ -189,6 +199,24 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 	}
 	for key, value := range normalizedReq {
 		allSettings[key] = value
+	}
+	_, catchAllEnabledChanged := normalizedReq["catchall_enabled"]
+	_, catchAllAccountChanged := normalizedReq["catchall_account_id"]
+	if (catchAllEnabledChanged || catchAllAccountChanged) && strings.EqualFold(allSettings["catchall_enabled"], "true") {
+		accountID, err := parseUUID(strings.TrimSpace(allSettings["catchall_account_id"]))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "catchall_account_id is required when catch-all is enabled"})
+			return
+		}
+		exists, err := h.store.ActiveAccountExists(c.Request.Context(), accountID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "catch-all account does not exist or is inactive"})
+			return
+		}
 	}
 	rules, err := webhook.ParseRules(allSettings[webhook.DomainsSetting])
 	if err != nil {
