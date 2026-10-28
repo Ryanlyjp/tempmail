@@ -1,4 +1,4 @@
-"""Catch-all settings UI regression; serve frontend on loopback :18089."""
+"""Administrator settings UI regression; serve frontend on loopback :18089."""
 import json
 from urllib.parse import parse_qs, urlparse
 
@@ -37,6 +37,12 @@ def api(route):
             route.fulfill(json={
                 "catchall_enabled": "true",
                 "catchall_account_id": ACCOUNT_IDS[-1],
+                "rate_limit_enabled": "true",
+                "rate_limit_limit": "500",
+                "rate_limit_window": "60",
+                "admin_rate_limit_enabled": "false",
+                "admin_rate_limit_limit": "700",
+                "admin_rate_limit_window": "30",
             })
         return
     if path == "/api/admin/hostnames":
@@ -73,6 +79,36 @@ with sync_playwright() as playwright:
     assert "account-101" in select.locator("option:checked").inner_text()
     assert select.get_attribute("data-1p-ignore") == "true"
 
+    assert page.locator("#toggle-rate-limit-user").is_checked()
+    assert not page.locator("#toggle-rate-limit-admin").is_checked()
+    assert page.locator("#input-rate-limit-user").input_value() == "500"
+    assert page.locator("#input-rate-window-user").input_value() == "60"
+    assert page.locator("#input-rate-limit-admin").input_value() == "700"
+    assert page.locator("#input-rate-window-admin").input_value() == "30"
+    page.locator("#input-rate-limit-user").fill("0")
+    page.get_by_role("button", name="保存速率限制").click()
+    page.wait_for_function("() => document.querySelector('#toast-container').textContent.includes('普通用户窗口请求数必须')")
+    assert not updates
+
+    page.locator("#input-rate-limit-user").fill("1200")
+    page.locator("#input-rate-window-user").fill("45")
+    page.locator("#toggle-rate-limit-admin").evaluate("element => element.click()")
+    page.locator("#input-rate-limit-admin").fill("3000")
+    page.locator("#input-rate-window-admin").fill("10")
+    page.get_by_role("button", name="保存速率限制").click()
+    page.wait_for_function("() => document.querySelector('#toast-container').textContent.includes('速率限制已保存并立即生效')")
+    assert updates[-1] == {
+        "rate_limit_enabled": "true",
+        "rate_limit_limit": "1200",
+        "rate_limit_window": "45",
+        "admin_rate_limit_enabled": "true",
+        "admin_rate_limit_limit": "3000",
+        "admin_rate_limit_window": "10",
+    }
+    page.wait_for_timeout(4000)
+    rate_group = page.locator(".rate-limit-grid").locator("xpath=..")
+    rate_group.screenshot(path="/tmp/rate-limit-settings-desktop.png")
+
     select.select_option(ACCOUNT_IDS[1])
     select.locator("xpath=following-sibling::button").click()
     page.wait_for_function("() => document.querySelector('#toast-container').textContent.includes('Catch-all 已开启')")
@@ -85,11 +121,14 @@ with sync_playwright() as playwright:
     )
 
     page.set_viewport_size({"width": 390, "height": 844})
+    rate_group.scroll_into_view_if_needed()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+    rate_group.screenshot(path="/tmp/rate-limit-settings-mobile.png")
     select.scroll_into_view_if_needed()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     select.locator("xpath=ancestor::div[contains(@class,'form-group')]").screenshot(
         path="/tmp/catchall-settings-mobile.png"
     )
     assert not errors, errors
-    print("UI_OK: Catch-all uses the paginated account selector and saves the selected owner")
+    print("UI_OK: role-based rate limits and Catch-all settings save correctly on desktop/mobile")
     browser.close()

@@ -19,11 +19,16 @@ import (
 )
 
 type SettingHandler struct {
-	store *store.Store
+	store      *store.Store
+	rateLimits *middleware.RateLimitSettings
 }
 
-func NewSettingHandler(s *store.Store) *SettingHandler {
-	return &SettingHandler{store: s}
+func NewSettingHandler(s *store.Store, configs ...*middleware.RateLimitSettings) *SettingHandler {
+	var rateLimits *middleware.RateLimitSettings
+	if len(configs) > 0 {
+		rateLimits = configs[0]
+	}
+	return &SettingHandler{store: s, rateLimits: rateLimits}
 }
 
 // GET /public/settings → 返回前端需要的公开配置
@@ -72,38 +77,44 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 
 	// 白名单：已知配置项
 	allowed := map[string]bool{
-		"registration_open":       true,
-		"rate_limit_enabled":      true,
-		"max_mailboxes_per_user":  true,
-		"smtp_server_ip":          true,
-		"smtp_hostname":           true,
-		"site_title":              true,
-		"announcement":            true,
-		"default_domain":          true,
-		"mailbox_ttl_minutes":     true,
-		"mailbox_page_size":       true,
-		"otp_segmented_enabled":   true,
-		"otp_segmented_lengths":   true,
-		"otp_segmented_senders":   true,
-		"api_mailbox_ttl_minutes": true,
-		"catchall_enabled":        true,
-		"catchall_account_id":     true,
-		"cf_api_token":            true,
-		"api_subdomain_enabled":   true,
-		"api_subdomain_length":    true,
-		"api_domain_strategy":     true,
-		"api_domain_fixed":        true,
-		"tg_bot_token":            true,
-		"tg_chat_id":              true,
-		"tg_message_thread_id":    true,
-		"tg_forward_mode":         true,
-		"tgmag_webhook_enabled":   true,
-		"tgmag_webhook_url":       true,
-		"tgmag_webhook_secret":    true,
-		"tgmag_webhook_domains":   true,
+		"registration_open":        true,
+		"rate_limit_enabled":       true,
+		"rate_limit_limit":         true,
+		"rate_limit_window":        true,
+		"admin_rate_limit_enabled": true,
+		"admin_rate_limit_limit":   true,
+		"admin_rate_limit_window":  true,
+		"max_mailboxes_per_user":   true,
+		"smtp_server_ip":           true,
+		"smtp_hostname":            true,
+		"site_title":               true,
+		"announcement":             true,
+		"default_domain":           true,
+		"mailbox_ttl_minutes":      true,
+		"mailbox_page_size":        true,
+		"otp_segmented_enabled":    true,
+		"otp_segmented_lengths":    true,
+		"otp_segmented_senders":    true,
+		"api_mailbox_ttl_minutes":  true,
+		"catchall_enabled":         true,
+		"catchall_account_id":      true,
+		"cf_api_token":             true,
+		"api_subdomain_enabled":    true,
+		"api_subdomain_length":     true,
+		"api_domain_strategy":      true,
+		"api_domain_fixed":         true,
+		"tg_bot_token":             true,
+		"tg_chat_id":               true,
+		"tg_message_thread_id":     true,
+		"tg_forward_mode":          true,
+		"tgmag_webhook_enabled":    true,
+		"tgmag_webhook_url":        true,
+		"tgmag_webhook_secret":     true,
+		"tgmag_webhook_domains":    true,
 	}
 
 	normalizedReq := make(map[string]string, len(req))
+	rateLimitChanged := false
 	for k, v := range req {
 		if !allowed[k] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting key: " + k})
@@ -133,6 +144,10 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		}
 		if k == "catchall_account_id" {
 			v = strings.TrimSpace(v)
+		}
+		if middleware.IsRateLimitSetting(k) {
+			v = strings.ToLower(strings.TrimSpace(v))
+			rateLimitChanged = true
 		}
 		if k == "otp_segmented_lengths" {
 			seen := map[string]bool{}
@@ -218,6 +233,12 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 			return
 		}
 	}
+	if rateLimitChanged {
+		if err := middleware.ValidateRateLimitSettings(allSettings); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	rules, err := webhook.ParseRules(allSettings[webhook.DomainsSetting])
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -268,6 +289,12 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 			}
 		}
 		if err := h.store.SetSetting(c.Request.Context(), k, v); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if rateLimitChanged && h.rateLimits != nil {
+		if err := h.rateLimits.Apply(allSettings); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

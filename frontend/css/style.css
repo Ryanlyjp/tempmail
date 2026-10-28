@@ -451,6 +451,23 @@ input, textarea, select { font-family: inherit; }
   box-shadow: 0 0 0 3px rgba(184,92,56,0.15);
 }
 .form-hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.3rem; }
+.rate-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.rate-limit-rule {
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.rate-limit-inputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.8rem;
+}
+.rate-limit-inputs .form-label { margin-bottom: 0.3rem; }
 
 /* 表格 */
 .table-wrap { overflow-x: auto; }
@@ -1642,6 +1659,8 @@ tr:hover td { background: rgba(184,92,56,0.04); }
 }
 
 @media (max-width: 768px) {
+	.rate-limit-grid,
+	.rate-limit-inputs { grid-template-columns: 1fr; }
 	.tgmag-webhook-domain-grid { grid-template-columns: 1fr; }
 	.otp-public-shell { padding: 1rem 0.8rem 2rem; }
 	.otp-public-header { align-items: flex-start; flex-direction: column; }

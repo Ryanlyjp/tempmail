@@ -3552,6 +3552,12 @@ async function renderAdminSettings(container) {
   } catch {}
 
   const regOpen    = settings.registration_open === 'true' || settings.registration_open === true;
+  const rateLimitEnabled = settings.rate_limit_enabled !== 'false' && settings.rate_limit_enabled !== false;
+  const rateLimitLimit = settings.rate_limit_limit || '500';
+  const rateLimitWindow = settings.rate_limit_window || '60';
+  const adminRateLimitEnabled = settings.admin_rate_limit_enabled === 'true' || settings.admin_rate_limit_enabled === true;
+  const adminRateLimitLimit = settings.admin_rate_limit_limit || '500';
+  const adminRateLimitWindow = settings.admin_rate_limit_window || '60';
   const smtpIp      = settings.smtp_server_ip       || '';
   const smtpHostname = getDefaultHostnameFromSettings(settings);
   const hostnames = normalizeHostnameList(hostnameItems);
@@ -3659,6 +3665,59 @@ async function renderAdminSettings(container) {
             <div class="toggle-label">开放自行注册</div>
             <span class="toggle-desc">开启后未登录用户可在登录页自行注册账户</span>
           </div>
+        </div>
+        <div class="divider"></div>
+
+        <div class="form-group">
+          <label class="form-label">API 速率限制</label>
+          <div class="rate-limit-grid">
+            <section class="rate-limit-rule">
+              <div class="toggle-wrap">
+                <label class="toggle">
+                  <input type="checkbox" id="toggle-rate-limit-user" ${rateLimitEnabled ? 'checked' : ''}>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div>
+                  <div class="toggle-label">普通用户</div>
+                  <span class="toggle-desc">按账户 API Key 独立计数</span>
+                </div>
+              </div>
+              <div class="rate-limit-inputs">
+                <label>
+                  <span class="form-label">窗口请求数</span>
+                  <input class="form-input" id="input-rate-limit-user" type="number" min="1" max="1000000" value="${escHtml(rateLimitLimit)}">
+                </label>
+                <label>
+                  <span class="form-label">窗口秒数</span>
+                  <input class="form-input" id="input-rate-window-user" type="number" min="1" max="86400" value="${escHtml(rateLimitWindow)}">
+                </label>
+              </div>
+            </section>
+            <section class="rate-limit-rule">
+              <div class="toggle-wrap">
+                <label class="toggle">
+                  <input type="checkbox" id="toggle-rate-limit-admin" ${adminRateLimitEnabled ? 'checked' : ''}>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div>
+                  <div class="toggle-label">管理员</div>
+                  <span class="toggle-desc">关闭时管理员 API Key 不限流</span>
+                </div>
+              </div>
+              <div class="rate-limit-inputs">
+                <label>
+                  <span class="form-label">窗口请求数</span>
+                  <input class="form-input" id="input-rate-limit-admin" type="number" min="1" max="1000000" value="${escHtml(adminRateLimitLimit)}">
+                </label>
+                <label>
+                  <span class="form-label">窗口秒数</span>
+                  <input class="form-input" id="input-rate-window-admin" type="number" min="1" max="86400" value="${escHtml(adminRateLimitWindow)}">
+                </label>
+              </div>
+            </section>
+          </div>
+          <div class="form-hint">达到上限后仅等待当前窗口结束，不会因重试延长限制时间。</div>
+          <button class="btn btn-primary btn-sm" onclick="saveRateLimitSettings()" style="margin-top:0.65rem">✓ 保存速率限制</button>
         </div>
         <div class="divider"></div>
 
@@ -4041,6 +4100,36 @@ window.saveRegistrationSetting = async function(enabled) {
     toast('保存失败: ' + e.message, 'error');
     const cb = $('toggle-reg');
     if (cb) cb.checked = !enabled;
+  }
+};
+
+window.saveRateLimitSettings = async function() {
+  const values = {
+    rate_limit_enabled: $('toggle-rate-limit-user')?.checked ? 'true' : 'false',
+    rate_limit_limit: String($('input-rate-limit-user')?.value || '').trim(),
+    rate_limit_window: String($('input-rate-window-user')?.value || '').trim(),
+    admin_rate_limit_enabled: $('toggle-rate-limit-admin')?.checked ? 'true' : 'false',
+    admin_rate_limit_limit: String($('input-rate-limit-admin')?.value || '').trim(),
+    admin_rate_limit_window: String($('input-rate-window-admin')?.value || '').trim(),
+  };
+  const checks = [
+    [values.rate_limit_limit, 1, 1000000, '普通用户窗口请求数'],
+    [values.rate_limit_window, 1, 86400, '普通用户窗口秒数'],
+    [values.admin_rate_limit_limit, 1, 1000000, '管理员窗口请求数'],
+    [values.admin_rate_limit_window, 1, 86400, '管理员窗口秒数'],
+  ];
+  for (const [raw, min, max, label] of checks) {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < min || value > max) {
+      toast(`${label}必须是 ${min} 到 ${max} 之间的整数`, 'warn');
+      return;
+    }
+  }
+  try {
+    await api.admin.saveSettings(values);
+    toast('速率限制已保存并立即生效', 'success');
+  } catch (error) {
+    toast('保存失败：' + error.message, 'error');
   }
 };
 

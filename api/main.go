@@ -38,6 +38,10 @@ func main() {
 	}
 	defer db.Close()
 	log.Println("✓ Database connected")
+	rateLimitSettings := middleware.NewRateLimitSettings(cfg.RateLimit, cfg.RateWindow)
+	if err := rateLimitSettings.Load(ctx, db); err != nil {
+		log.Printf("[ratelimit] failed to load database settings; using environment defaults: %v", err)
+	}
 
 	// ==================== 连接 Redis ====================
 	rdb := redis.NewClient(&redis.Options{
@@ -83,7 +87,7 @@ func main() {
 	favoriteGroupH := handler.NewFavoriteGroupHandler(db)
 	emailH := handler.NewEmailHandler(db)
 	otpShareH := handler.NewOTPShareHandler(db)
-	settingH := handler.NewSettingHandler(db)
+	settingH := handler.NewSettingHandler(db, rateLimitSettings)
 	registerH := handler.NewRegisterHandler(db)
 	statsH := handler.NewStatsHandler(db)
 
@@ -121,7 +125,7 @@ func main() {
 	// API 路由组（需要认证 + 速率限制）
 	api := r.Group("/api")
 	api.Use(middleware.Auth(db))
-	api.Use(middleware.RateLimit(rdb, cfg.RateLimit, cfg.RateWindow))
+	api.Use(middleware.RateLimit(rdb, rateLimitSettings))
 	{
 		// 当前用户
 		api.GET("/me", accountH.Me)
